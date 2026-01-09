@@ -4,9 +4,14 @@ class P2PChat {
         this.peer = null;
         this.connections = new Map(); // peerId -> DataConnection
         this.calls = new Map(); // peerId -> MediaConnection
+        this.peerNames = new Map(); // peerId -> username
+        this.pendingConnections = new Map(); // peerId -> {conn, name}
         this.currentPeer = null;
-        this.messages = {}; // peerId -> [messages]
+        this.messages = {};
         this.localStream = null;
+        this.username = localStorage.getItem('p2p_username') || '';
+        this.typingTimeout = null;
+        this.approvedPeers = new Set(JSON.parse(localStorage.getItem('p2p_approved') || '[]'));
 
         this.init();
     }
@@ -39,6 +44,35 @@ class P2PChat {
 
         this.setupUI();
         this.loadSavedMessages();
+        this.loadPeerNames();
+        this.promptForUsername();
+    }
+
+    promptForUsername() {
+        if (!this.username) {
+            const name = prompt('Enter your display name:', 'User' + Math.floor(Math.random() * 1000));
+            if (name) {
+                this.username = name.trim().slice(0, 20);
+                localStorage.setItem('p2p_username', this.username);
+            } else {
+                this.username = 'Anonymous';
+            }
+        }
+        document.getElementById('myUsername').textContent = this.username;
+    }
+
+    editUsername() {
+        const name = prompt('Enter new display name:', this.username);
+        if (name && name.trim()) {
+            this.username = name.trim().slice(0, 20);
+            localStorage.setItem('p2p_username', this.username);
+            document.getElementById('myUsername').textContent = this.username;
+            // Notify all connected peers of name change
+            this.connections.forEach(conn => {
+                conn.send({ type: 'username', name: this.username });
+            });
+            this.showToast('Username updated!');
+        }
     }
 
     setupUI() {
@@ -85,6 +119,12 @@ class P2PChat {
 
         // Delete individual chat
         document.getElementById('btnDeleteChat').onclick = () => this.deleteCurrentChat();
+
+        // Edit username
+        document.getElementById('btnEditUsername').onclick = () => this.editUsername();
+
+        // Typing indicator
+        document.getElementById('messageInput').oninput = () => this.sendTypingIndicator();
     }
 
     connectToPeer(peerId) {
@@ -99,34 +139,81 @@ class P2PChat {
 
     handleConnection(conn) {
         conn.on('open', () => {
-            this.connections.set(conn.peer, conn);
-            this.updatePeersList();
-            this.selectPeer(conn.peer);
-            this.showToast(`Connected to ${conn.peer.slice(0, 8)}...`);
-        });
-
-        conn.on('data', async (data) => {
-            if (data.type === 'message') {
-                const decrypted = await window.e2eCrypto.decrypt(data.content, conn.peer);
-                this.receiveMessage(conn.peer, decrypted, data.timestamp);
-            } else if (data.type === 'media') {
-                this.receiveMedia(conn.peer, data);
-            } else if (data.type === 'voice-key') {
-                // Receive voice encryption key from peer
-                await window.voiceCrypto.importKey(new Uint8Array(data.key));
-                console.log('Voice encryption key received');
+            // Check if already approved
+            if (this.approvedPeers.has(conn.peer)) {
+                this.acceptConnection(conn);
+            } else {
+                // Pending - wait for request message
+                conn.on('data', (data) => {
+                    if (data.type === 'connect-request') {
+                        this.pendingConnections.set(conn.peer, { conn, name: data.name });
+                        this.showConnectionRequest(conn.peer, data.name);
+                    }
+                });
+                // Send our request
+                conn.send({ type: 'connect-request', name: this.username });
             }
         });
 
         conn.on('close', () => {
             this.connections.delete(conn.peer);
+            this.pendingConnections.delete(conn.peer);
             this.updatePeersList();
-            this.showToast(`Disconnected from ${conn.peer.slice(0, 8)}...`);
         });
 
-        conn.on('error', (err) => {
-            console.error('Connection error:', err);
+        conn.on('error', (err) => console.error('Connection error:', err));
+    }
+
+    acceptConnection(conn) {
+        this.connections.set(conn.peer, conn);
+        this.approvedPeers.add(conn.peer);
+        localStorage.setItem('p2p_approved', JSON.stringify([...this.approvedPeers]));
+        conn.send({ type: 'username', name: this.username });
+        conn.send({ type: 'connect-accepted' });
+        this.setupConnectionHandlers(conn);
+        this.updatePeersList();
+        this.selectPeer(conn.peer);
+        this.showToast(`Connected to ${this.getPeerName(conn.peer)}`);
+    }
+
+    setupConnectionHandlers(conn) {
+        conn.on('data', async (data) => {
+            if (data.type === 'message') {
+                const decrypted = await window.e2eCrypto.decrypt(data.content, conn.peer);
+                this.receiveMessage(conn.peer, decrypted, data.timestamp);
+                this.playNotificationSound();
+            } else if (data.type === 'media') {
+                this.receiveMedia(conn.peer, data);
+                this.playNotificationSound();
+            } else if (data.type === 'voice-key') {
+                await window.voiceCrypto.importKey(new Uint8Array(data.key));
+            } else if (data.type === 'username') {
+                this.peerNames.set(conn.peer, data.name);
+                this.savePeerNames();
+                this.updatePeersList();
+                if (this.currentPeer === conn.peer) this.updateChatHeader();
+            } else if (data.type === 'typing') {
+                this.showTypingIndicator(conn.peer, data.isTyping);
+            } else if (data.type === 'connect-accepted') {
+                this.acceptConnection(conn);
+            }
         });
+    }
+
+    showConnectionRequest(peerId, name) {
+        const peerName = name || peerId.slice(0, 8) + '...';
+        if (confirm(`${peerName} wants to connect. Accept?`)) {
+            const pending = this.pendingConnections.get(peerId);
+            if (pending) {
+                this.peerNames.set(peerId, name);
+                this.acceptConnection(pending.conn);
+                this.pendingConnections.delete(peerId);
+            }
+        } else {
+            const pending = this.pendingConnections.get(peerId);
+            if (pending) pending.conn.close();
+            this.pendingConnections.delete(peerId);
+        }
     }
 
     updatePeersList() {
@@ -139,12 +226,13 @@ class P2PChat {
 
         list.innerHTML = '';
         this.connections.forEach((conn, peerId) => {
+            const name = this.getPeerName(peerId);
             const div = document.createElement('div');
             div.className = 'peer-item' + (this.currentPeer === peerId ? ' active' : '');
             div.innerHTML = `
-                <div class="peer-avatar">${peerId.charAt(0).toUpperCase()}</div>
+                <div class="peer-avatar">${name.charAt(0).toUpperCase()}</div>
                 <div class="peer-info">
-                    <div class="peer-name">${peerId.slice(0, 12)}...</div>
+                    <div class="peer-name">${name}</div>
                     <div class="peer-status">Connected</div>
                 </div>
             `;
@@ -342,6 +430,62 @@ class P2PChat {
         const saved = localStorage.getItem('p2p_messages');
         if (saved) {
             this.messages = JSON.parse(saved);
+        }
+    }
+
+    // Peer Names
+    getPeerName(peerId) {
+        return this.peerNames.get(peerId) || peerId.slice(0, 8) + '...';
+    }
+
+    savePeerNames() {
+        const obj = Object.fromEntries(this.peerNames);
+        localStorage.setItem('p2p_peerNames', JSON.stringify(obj));
+    }
+
+    loadPeerNames() {
+        const saved = localStorage.getItem('p2p_peerNames');
+        if (saved) {
+            const obj = JSON.parse(saved);
+            this.peerNames = new Map(Object.entries(obj));
+        }
+    }
+
+    updateChatHeader() {
+        if (!this.currentPeer) return;
+        const name = this.getPeerName(this.currentPeer);
+        document.getElementById('chatPeerName').textContent = name;
+        document.getElementById('chatAvatar').textContent = name.charAt(0).toUpperCase();
+    }
+
+    // Typing Indicators
+    sendTypingIndicator() {
+        if (!this.currentPeer) return;
+        const conn = this.connections.get(this.currentPeer);
+        if (!conn) return;
+
+        conn.send({ type: 'typing', isTyping: true });
+
+        clearTimeout(this.typingTimeout);
+        this.typingTimeout = setTimeout(() => {
+            conn.send({ type: 'typing', isTyping: false });
+        }, 2000);
+    }
+
+    showTypingIndicator(peerId, isTyping) {
+        if (this.currentPeer !== peerId) return;
+        const indicator = document.getElementById('typingIndicator');
+        if (indicator) {
+            indicator.style.display = isTyping ? 'block' : 'none';
+        }
+    }
+
+    // Notification Sound
+    playNotificationSound() {
+        if (document.hidden) {
+            const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdH2Onrq8vLy8vLy4p5R0W1RcdIecsNHcvLy8vLy0p4x0YGNwiZuqu8na3Ly8vLi0p4x0YGRyipyqu8na1Ly8vLi0p4x0YGNyipyru8na1Ly8vLi0p4x0YGNyipyru8rZ1Ly8vLi0p4x0YGNwiZuruszZ1Ly8vLiwo4hxX2BvhpequszZ1Ly8vLiroYZvXl9vhpequczZ1Ly8u7WpnIFsYGJ0');
+            audio.volume = 0.3;
+            audio.play().catch(() => { });
         }
     }
 

@@ -114,6 +114,58 @@ body {
     color: var(--accent);
 }
 
+/* Username Display */
+.username-display {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    background: var(--bg-tertiary);
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 8px;
+}
+
+.username-display span {
+    flex: 1;
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.btn-edit {
+    background: none;
+    border: none;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    transition: background 0.15s;
+}
+
+.btn-edit:hover {
+    background: var(--bg-hover);
+}
+
+/* Typing Indicator */
+.typing-indicator {
+    font-size: 12px;
+    color: var(--accent);
+    font-style: italic;
+    animation: blink 1s infinite;
+}
+
+@keyframes blink {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.5;
+    }
+}
+
 /* Connect Section */
 .connect-section {
     padding: 16px;
