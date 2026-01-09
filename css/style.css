@@ -323,6 +323,23 @@ body {
     color: var(--accent);
 }
 
+.btn-delete-chat {
+    width: 40px;
+    height: 40px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 18px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btn-delete-chat:hover {
+    background: rgba(234, 0, 56, 0.2);
+    color: var(--error);
+}
+
 /* Messages */
 .messages-container {
     flex: 1;

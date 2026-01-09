@@ -82,6 +82,9 @@ class P2PChat {
         document.getElementById('btnAttach').onclick = () => this.showMediaOptions();
         document.getElementById('mediaFileInput').onchange = (e) => this.handleMediaSelect(e);
         document.getElementById('btnRecordAudio').onclick = () => this.toggleAudioRecording();
+
+        // Delete individual chat
+        document.getElementById('btnDeleteChat').onclick = () => this.deleteCurrentChat();
     }
 
     connectToPeer(peerId) {
@@ -373,6 +376,33 @@ class P2PChat {
             this.peer.destroy();
             this.showToast('All data cleared!');
             setTimeout(() => location.reload(), 1000);
+        }
+    }
+
+    // Delete current chat only
+    deleteCurrentChat() {
+        if (!this.currentPeer) return;
+
+        const peerName = this.currentPeer.slice(0, 12) + '...';
+        if (confirm(`Delete chat with ${peerName}? This will remove all messages.`)) {
+            // Delete messages for this peer
+            delete this.messages[this.currentPeer];
+            this.saveMessages();
+
+            // Close connection if still connected
+            const conn = this.connections.get(this.currentPeer);
+            if (conn) {
+                conn.close();
+                this.connections.delete(this.currentPeer);
+            }
+
+            // Reset UI
+            this.currentPeer = null;
+            this.updatePeersList();
+            document.getElementById('chatView').style.display = 'none';
+            document.getElementById('emptyState').style.display = 'flex';
+
+            this.showToast('Chat deleted');
         }
     }
 
