@@ -42,6 +42,11 @@
                     <p class="no-peers">No connections yet</p>
                 </div>
             </div>
+
+            <!-- Clear Data -->
+            <div class="clear-data-section">
+                <button class="btn-clear-data" id="btnClearData">🗑️ Clear All Data</button>
+            </div>
         </aside>
 
         <!-- Chat Area -->
@@ -71,9 +76,12 @@
 
                 <div class="message-input-container">
                     <div class="message-input-wrapper">
+                        <button class="btn-media" id="btnAttach" title="Attach Photo/Video">📎</button>
+                        <button class="btn-media" id="btnRecordAudio" title="Record Audio">🎙️</button>
                         <input type="text" class="message-input" id="messageInput" placeholder="Type a message...">
                         <button class="btn-send" id="btnSend">➤</button>
                     </div>
+                    <input type="file" id="mediaFileInput" accept="image/*,video/*,audio/*" style="display:none">
                 </div>
             </div>
         </main>
@@ -85,6 +93,7 @@
             <div class="call-avatar">📞</div>
             <h2 id="callPeerName">Calling...</h2>
             <p class="call-status" id="callStatus">Connecting...</p>
+            <span class="call-encryption-badge" id="callEncryptionBadge">🔐 E2E Encrypted</span>
         </div>
         <div class="call-controls">
             <button class="btn-call-control accept" id="btnAcceptCall" style="display:none;">✓</button>

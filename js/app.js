@@ -74,6 +74,14 @@ class P2PChat {
         document.getElementById('btnVoiceCall').onclick = () => this.startCall();
         document.getElementById('btnEndCall').onclick = () => this.endCall();
         document.getElementById('btnAcceptCall').onclick = () => this.acceptCall();
+
+        // Clear all data
+        document.getElementById('btnClearData').onclick = () => this.clearAllData();
+
+        // Media sharing
+        document.getElementById('btnAttach').onclick = () => this.showMediaOptions();
+        document.getElementById('mediaFileInput').onchange = (e) => this.handleMediaSelect(e);
+        document.getElementById('btnRecordAudio').onclick = () => this.toggleAudioRecording();
     }
 
     connectToPeer(peerId) {
@@ -98,6 +106,12 @@ class P2PChat {
             if (data.type === 'message') {
                 const decrypted = await window.e2eCrypto.decrypt(data.content, conn.peer);
                 this.receiveMessage(conn.peer, decrypted, data.timestamp);
+            } else if (data.type === 'media') {
+                this.receiveMedia(conn.peer, data);
+            } else if (data.type === 'voice-key') {
+                // Receive voice encryption key from peer
+                await window.voiceCrypto.importKey(new Uint8Array(data.key));
+                console.log('Voice encryption key received');
             }
         });
 
@@ -204,9 +218,22 @@ class P2PChat {
 
             const time = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+            let content = '';
+            if (msg.isMedia) {
+                if (msg.mediaType === 'image') {
+                    content = `<img src="${msg.content}" class="media-image" alt="Shared image">`;
+                } else if (msg.mediaType === 'video') {
+                    content = `<video src="${msg.content}" class="media-video" controls></video>`;
+                } else if (msg.mediaType === 'audio') {
+                    content = `<audio src="${msg.content}" class="media-audio" controls></audio>`;
+                }
+            } else {
+                content = `<div class="message-text">${this.escapeHtml(msg.text)}</div>`;
+            }
+
             div.innerHTML = `
                 <div class="message-bubble">
-                    <div class="message-text">${this.escapeHtml(msg.text)}</div>
+                    ${content}
                     <div class="message-time">${time}</div>
                 </div>
             `;
@@ -221,8 +248,17 @@ class P2PChat {
         if (!this.currentPeer) return;
 
         try {
+            // Generate and share voice encryption key
+            const keyData = await window.voiceCrypto.generateKey();
+            const conn = this.connections.get(this.currentPeer);
+            if (conn) {
+                conn.send({ type: 'voice-key', key: Array.from(new Uint8Array(keyData)) });
+            }
+
             this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-            const call = this.peer.call(this.currentPeer, this.localStream);
+            const call = this.peer.call(this.currentPeer, this.localStream, {
+                metadata: { encrypted: window.voiceCrypto.supported }
+            });
 
             this.handleOutgoingCall(call);
 
@@ -230,6 +266,8 @@ class P2PChat {
             document.getElementById('callPeerName').textContent = this.currentPeer.slice(0, 12) + '...';
             document.getElementById('callStatus').textContent = 'Calling...';
             document.getElementById('btnAcceptCall').style.display = 'none';
+            document.getElementById('callEncryptionBadge').textContent =
+                window.voiceCrypto.supported ? '🔐 E2E Encrypted' : '🔒 Transport Encrypted';
         } catch (err) {
             console.error('Error starting call:', err);
             this.showToast('Could not access microphone');
@@ -323,6 +361,131 @@ class P2PChat {
         toast.classList.add('show');
 
         setTimeout(() => toast.classList.remove('show'), 3000);
+    }
+
+    // Clear all data
+    clearAllData() {
+        if (confirm('This will delete all messages, connections, and peer ID. Continue?')) {
+            localStorage.clear();
+            this.messages = {};
+            this.connections.forEach(conn => conn.close());
+            this.connections.clear();
+            this.peer.destroy();
+            this.showToast('All data cleared!');
+            setTimeout(() => location.reload(), 1000);
+        }
+    }
+
+    // Media sharing
+    showMediaOptions() {
+        document.getElementById('mediaFileInput').click();
+    }
+
+    async handleMediaSelect(e) {
+        const file = e.target.files[0];
+        if (!file || !this.currentPeer) return;
+
+        const maxSize = 10 * 1024 * 1024; // 10MB limit
+        if (file.size > maxSize) {
+            this.showToast('File too large (max 10MB)');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = async () => {
+            const base64 = reader.result;
+            const conn = this.connections.get(this.currentPeer);
+            if (!conn) return;
+
+            const mediaData = {
+                type: 'media',
+                mediaType: file.type.startsWith('image') ? 'image' :
+                    file.type.startsWith('video') ? 'video' : 'audio',
+                content: base64,
+                fileName: file.name,
+                timestamp: Date.now()
+            };
+
+            conn.send(mediaData);
+            this.addMedia(this.currentPeer, mediaData, true);
+        };
+        reader.readAsDataURL(file);
+        e.target.value = '';
+    }
+
+    addMedia(peerId, data, sent) {
+        if (!this.messages[peerId]) {
+            this.messages[peerId] = [];
+        }
+        this.messages[peerId].push({
+            isMedia: true,
+            mediaType: data.mediaType,
+            content: data.content,
+            fileName: data.fileName,
+            timestamp: data.timestamp,
+            sent
+        });
+        this.saveMessages();
+        if (this.currentPeer === peerId) {
+            this.renderMessages(peerId);
+        }
+    }
+
+    receiveMedia(peerId, data) {
+        this.addMedia(peerId, data, false);
+        if (this.currentPeer !== peerId) {
+            this.showToast(`New media from ${peerId.slice(0, 8)}...`);
+        }
+    }
+
+    // Audio recording
+    async toggleAudioRecording() {
+        const btn = document.getElementById('btnRecordAudio');
+
+        if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+            this.mediaRecorder.stop();
+            btn.textContent = '🎙️';
+            btn.classList.remove('recording');
+        } else {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                this.audioChunks = [];
+                this.mediaRecorder = new MediaRecorder(stream);
+
+                this.mediaRecorder.ondataavailable = (e) => {
+                    this.audioChunks.push(e.data);
+                };
+
+                this.mediaRecorder.onstop = () => {
+                    const blob = new Blob(this.audioChunks, { type: 'audio/webm' });
+                    stream.getTracks().forEach(t => t.stop());
+
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        const conn = this.connections.get(this.currentPeer);
+                        if (!conn) return;
+
+                        const mediaData = {
+                            type: 'media',
+                            mediaType: 'audio',
+                            content: reader.result,
+                            fileName: `recording_${Date.now()}.webm`,
+                            timestamp: Date.now()
+                        };
+                        conn.send(mediaData);
+                        this.addMedia(this.currentPeer, mediaData, true);
+                    };
+                    reader.readAsDataURL(blob);
+                };
+
+                this.mediaRecorder.start();
+                btn.textContent = '⏹️';
+                btn.classList.add('recording');
+                this.showToast('Recording...');
+            } catch (err) {
+                this.showToast('Could not access microphone');
+            }
+        }
     }
 }
 
