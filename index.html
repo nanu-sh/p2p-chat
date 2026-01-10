@@ -3,17 +3,22 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#111b21">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>P2P Chat - Private & Encrypted</title>
+    <meta name="description" content="Secure peer-to-peer chat. No servers, no tracking, end-to-end encrypted.">
     <link rel="stylesheet" href="css/style.css">
 </head>
 
 <body>
     <div class="app-container">
         <!-- Sidebar -->
-        <aside class="sidebar">
-            <div class="sidebar-header">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header" id="sidebarToggle">
                 <h2>🔒 P2P Chat</h2>
+                <span class="toggle-icon">▼</span>
             </div>
 
             <!-- Your Profile Section -->
@@ -23,35 +28,50 @@
                     <span id="myUsername">Loading...</span>
                     <button class="btn-edit" id="btnEditUsername" title="Edit Username">✏️</button>
                 </div>
-                <label style="margin-top: 12px;">Your Peer ID (Share this!)</label>
-                <div class="id-display">
-                    <span id="myPeerId">Connecting...</span>
-                    <button class="btn-copy" id="btnCopyId" title="Copy ID">📋</button>
-                    <a id="shareLink" href="#" class="btn-share" title="Share Link">🔗</a>
-                </div>
                 <div class="status" id="connectionStatus">⏳ Connecting to network...</div>
             </div>
 
-            <!-- Connect Section -->
+            <!-- Room Section -->
             <div class="connect-section">
-                <label>Connect to Friend</label>
+                <label>Join or Create Room</label>
                 <div class="connect-input-wrapper">
-                    <input type="text" id="friendIdInput" placeholder="Enter friend's Peer ID">
-                    <button class="btn-connect" id="btnConnect">Connect</button>
+                    <input type="text" id="roomInput" placeholder="Enter room name or leave blank">
+                    <button class="btn-connect" id="btnJoinRoom">Join</button>
+                </div>
+                <p class="hint" style="margin-top: 8px; font-size: 11px; color: var(--text-muted);">
+                    Share the room link with friends to chat together!
+                </p>
+            </div>
+
+            <!-- Current Room -->
+            <div class="room-section" id="roomSection" style="display:none;">
+                <label>Current Room</label>
+                <div class="room-display">
+                    <span id="currentRoomName">-</span>
+                    <button class="btn-copy" id="btnCopyRoomLink" title="Copy Room Link">🔗</button>
                 </div>
             </div>
 
-            <!-- Connected Peers -->
+            <!-- Peers in Room -->
             <div class="peers-section">
-                <label>Connected Peers</label>
+                <label>Peers in Room (<span id="peerCount">0</span>)</label>
                 <div class="peers-list" id="peersList">
-                    <p class="no-peers">No connections yet</p>
+                    <p class="no-peers">Join a room to start chatting</p>
+                </div>
+            </div>
+
+            <!-- Security / Verification -->
+            <div class="security-section" id="securitySection" style="display:none;">
+                <label>🔐 Security Verification</label>
+                <div class="fingerprint-display">
+                    <span class="fingerprint" id="myFingerprint">-</span>
+                    <p class="hint">Share this fingerprint out-of-band to verify your identity</p>
                 </div>
             </div>
 
             <!-- Clear Data -->
             <div class="clear-data-section">
-                <button class="btn-clear-data" id="btnClearData">🗑️ Clear All Data</button>
+                <button class="btn-clear-data" id="btnLeaveRoom">🚪 Leave Room</button>
             </div>
         </aside>
 
@@ -59,28 +79,34 @@
         <main class="chat-area">
             <div class="empty-state" id="emptyState">
                 <div class="empty-icon">💬</div>
-                <h3>P2P Encrypted Chat</h3>
-                <p>Share your Peer ID with friends to start chatting</p>
+                <h3>P2P Encrypted Group Chat</h3>
+                <p>Join a room to start chatting with your group</p>
                 <p class="hint">Messages go directly between browsers — no server!</p>
+                <button class="btn-create-room" id="btnCreateRoom">Create New Room</button>
             </div>
 
             <div id="chatView" style="display:none;">
                 <div class="chat-header">
                     <div class="chat-header-info">
-                        <div class="chat-avatar" id="chatAvatar">👤</div>
+                        <div class="chat-avatar" id="chatAvatar">💬</div>
                         <div class="chat-header-text">
-                            <h3 id="chatPeerName">Friend</h3>
+                            <h3 id="chatRoomName">Room</h3>
                             <span class="encryption-badge">🔐 End-to-end encrypted</span>
-                            <span class="typing-indicator" id="typingIndicator" style="display:none;">typing...</span>
+                            <span class="peer-count-badge" id="peerCountBadge">0 peers</span>
                         </div>
                     </div>
                     <div class="call-buttons">
                         <button class="btn-call" id="btnVoiceCall" title="Voice Call">📞</button>
-                        <button class="btn-delete-chat" id="btnDeleteChat" title="Delete This Chat">🗑️</button>
+                        <button class="btn-call" id="btnShowPeers" title="Show Peers">👥</button>
                     </div>
                 </div>
 
                 <div class="messages-container" id="messagesContainer"></div>
+
+                <!-- Typing indicators -->
+                <div class="typing-bar" id="typingBar" style="display:none;">
+                    <span id="typingText">Someone is typing...</span>
+                </div>
 
                 <div class="message-input-container">
                     <div class="message-input-wrapper">
@@ -106,6 +132,22 @@
         <div class="call-controls">
             <button class="btn-call-control accept" id="btnAcceptCall" style="display:none;">✓</button>
             <button class="btn-call-control end" id="btnEndCall">✕</button>
+        </div>
+    </div>
+
+    <!-- Peer Verification Modal -->
+    <div class="modal-overlay" id="verifyModal" style="display:none;">
+        <div class="modal">
+            <h3>🔐 Verify Peer</h3>
+            <p class="peer-verify-name" id="verifyPeerName">-</p>
+            <div class="fingerprint-box">
+                <span id="verifyFingerprint">-</span>
+            </div>
+            <p class="hint">Confirm this fingerprint matches what your peer sees on their device.</p>
+            <div class="modal-buttons">
+                <button class="btn-cancel" id="btnCancelVerify">Close</button>
+                <button class="btn-confirm" id="btnConfirmVerify">✓ Verified</button>
+            </div>
         </div>
     </div>
 

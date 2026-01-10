@@ -1,23 +1,31 @@
-// P2P Chat App using PeerJS
+// P2P Chat App - Room-based with Multiple Peers
 class P2PChat {
     constructor() {
         this.peer = null;
         this.connections = new Map(); // peerId -> DataConnection
-        this.calls = new Map(); // peerId -> MediaConnection
         this.peerNames = new Map(); // peerId -> username
-        this.pendingConnections = new Map(); // peerId -> {conn, name}
-        this.currentPeer = null;
-        this.messages = {};
-        this.localStream = null;
+        this.peerFingerprints = new Map(); // peerId -> fingerprint
+        this.verifiedPeers = new Set(JSON.parse(localStorage.getItem('verified_peers') || '[]'));
+        this.currentRoom = null;
+        this.messages = [];
         this.username = localStorage.getItem('p2p_username') || '';
+        this.typingPeers = new Set();
         this.typingTimeout = null;
-        this.approvedPeers = new Set(JSON.parse(localStorage.getItem('p2p_approved') || '[]'));
+        this.localStream = null;
+        this.calls = new Map();
+        this.pendingCall = null;
 
         this.init();
     }
 
-    init() {
-        // Create peer with TURN servers for cross-network connectivity
+    async init() {
+        // Wait for crypto to be ready
+        await window.e2eCrypto.init();
+
+        // Generate our fingerprint
+        this.myFingerprint = await this.generateFingerprint();
+
+        // Create peer
         this.peer = new Peer(null, {
             config: {
                 iceServers: [
@@ -30,24 +38,19 @@ class P2PChat {
         });
 
         this.peer.on('open', (id) => {
-            document.getElementById('myPeerId').textContent = id;
-            document.getElementById('connectionStatus').textContent = '🟢 Connected to network';
+            document.getElementById('connectionStatus').textContent = '🟢 Connected';
             document.getElementById('connectionStatus').classList.add('connected');
-            localStorage.setItem('myPeerId', id);
 
-            // Update share URL with peer ID
-            const shareUrl = `${window.location.origin}${window.location.pathname}#${id}`;
-            document.getElementById('shareLink').href = shareUrl;
+            // Show fingerprint
+            document.getElementById('myFingerprint').textContent = this.myFingerprint;
+            document.getElementById('securitySection').style.display = 'block';
 
-            // Check if someone shared their ID in the URL
-            this.checkUrlInvite();
-
-            // Start heartbeat for mobile keep-alive
-            this.startHeartbeat();
+            // Check for room in URL
+            this.checkUrlRoom();
         });
 
         this.peer.on('connection', (conn) => {
-            this.handleConnection(conn);
+            this.handleIncomingConnection(conn);
         });
 
         this.peer.on('call', (call) => {
@@ -56,13 +59,25 @@ class P2PChat {
 
         this.peer.on('error', (err) => {
             console.error('Peer error:', err);
-            document.getElementById('connectionStatus').textContent = '🔴 Error: ' + err.type;
+            document.getElementById('connectionStatus').textContent = '🔴 ' + err.type;
         });
 
         this.setupUI();
-        this.loadSavedMessages();
-        this.loadPeerNames();
         this.promptForUsername();
+    }
+
+    async generateFingerprint() {
+        const publicKey = await window.e2eCrypto.getPublicKeyString();
+        const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(publicKey));
+        const bytes = new Uint8Array(hash);
+        // Format as readable fingerprint (like Signal)
+        let fp = '';
+        for (let i = 0; i < 8; i++) {
+            if (i > 0) fp += ' ';
+            fp += bytes[i].toString(16).padStart(2, '0').toUpperCase();
+            fp += bytes[i + 8].toString(16).padStart(2, '0').toUpperCase();
+        }
+        return fp;
     }
 
     promptForUsername() {
@@ -84,38 +99,32 @@ class P2PChat {
             this.username = name.trim().slice(0, 20);
             localStorage.setItem('p2p_username', this.username);
             document.getElementById('myUsername').textContent = this.username;
-            // Notify all connected peers of name change
-            this.connections.forEach(conn => {
-                conn.send({ type: 'username', name: this.username });
-            });
+            // Notify all peers
+            this.broadcast({ type: 'username', name: this.username });
             this.showToast('Username updated!');
         }
     }
 
     setupUI() {
-        // Copy ID
-        document.getElementById('btnCopyId').onclick = () => {
-            const id = document.getElementById('myPeerId').textContent;
-            navigator.clipboard.writeText(id);
-            this.showToast('Peer ID copied!');
+        // Sidebar toggle for mobile
+        document.getElementById('sidebarToggle').onclick = () => {
+            document.getElementById('sidebar').classList.toggle('collapsed');
         };
 
-        // Connect to peer
-        document.getElementById('btnConnect').onclick = () => {
-            const friendId = document.getElementById('friendIdInput').value.trim();
-            if (friendId) {
-                this.connectToPeer(friendId);
-                document.getElementById('friendIdInput').value = '';
-            }
+        // Username edit
+        document.getElementById('btnEditUsername').onclick = () => this.editUsername();
+
+        // Room controls
+        document.getElementById('btnJoinRoom').onclick = () => this.joinRoom();
+        document.getElementById('btnCreateRoom').onclick = () => this.createRoom();
+        document.getElementById('btnLeaveRoom').onclick = () => this.leaveRoom();
+        document.getElementById('btnCopyRoomLink').onclick = () => this.copyRoomLink();
+
+        document.getElementById('roomInput').onkeypress = (e) => {
+            if (e.key === 'Enter') this.joinRoom();
         };
 
-        document.getElementById('friendIdInput').onkeypress = (e) => {
-            if (e.key === 'Enter') {
-                document.getElementById('btnConnect').click();
-            }
-        };
-
-        // Send message
+        // Messaging
         document.getElementById('btnSend').onclick = () => this.sendMessage();
         document.getElementById('messageInput').onkeydown = (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -123,295 +132,473 @@ class P2PChat {
                 this.sendMessage();
             }
         };
+        document.getElementById('messageInput').oninput = () => this.sendTypingIndicator();
 
         // Voice call
-        document.getElementById('btnVoiceCall').onclick = () => this.startCall();
+        document.getElementById('btnVoiceCall').onclick = () => this.startGroupCall();
         document.getElementById('btnEndCall').onclick = () => this.endCall();
         document.getElementById('btnAcceptCall').onclick = () => this.acceptCall();
 
-        // Clear all data
-        document.getElementById('btnClearData').onclick = () => this.clearAllData();
+        // Show peers panel
+        document.getElementById('btnShowPeers').onclick = () => {
+            document.getElementById('sidebar').classList.remove('collapsed');
+        };
 
-        // Media sharing
-        document.getElementById('btnAttach').onclick = () => this.showMediaOptions();
+        // Media
+        document.getElementById('btnAttach').onclick = () => document.getElementById('mediaFileInput').click();
         document.getElementById('mediaFileInput').onchange = (e) => this.handleMediaSelect(e);
         document.getElementById('btnRecordAudio').onclick = () => this.toggleAudioRecording();
 
-        // Delete individual chat
-        document.getElementById('btnDeleteChat').onclick = () => this.deleteCurrentChat();
+        // Verification modal
+        document.getElementById('btnCancelVerify').onclick = () => {
+            document.getElementById('verifyModal').style.display = 'none';
+        };
+        document.getElementById('btnConfirmVerify').onclick = () => {
+            this.confirmVerification();
+        };
 
-        // Edit username
-        document.getElementById('btnEditUsername').onclick = () => this.editUsername();
-
-        // Typing indicator
-        document.getElementById('messageInput').oninput = () => this.sendTypingIndicator();
-
-        // Fix: Force user interaction for mobile audio playback
+        // Mobile audio fix
         document.body.addEventListener('click', () => {
             const audio = document.getElementById('remoteAudio');
             audio.play().catch(() => { });
         }, { once: true });
     }
 
-    connectToPeer(peerId) {
-        if (this.connections.has(peerId)) {
-            this.selectPeer(peerId);
+    // Room Management
+    createRoom() {
+        const roomId = this.generateRoomId();
+        this.joinRoomById(roomId);
+    }
+
+    joinRoom() {
+        const input = document.getElementById('roomInput').value.trim();
+        const roomId = input || this.generateRoomId();
+        this.joinRoomById(roomId);
+    }
+
+    generateRoomId() {
+        // Generate UUID-like room ID
+        return 'xxxxxxxx-xxxx-4xxx-yxxx'.replace(/[xy]/g, (c) => {
+            const r = Math.random() * 16 | 0;
+            const v = c === 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+    }
+
+    joinRoomById(roomId) {
+        if (this.currentRoom === roomId) {
+            this.showToast('Already in this room');
             return;
         }
 
-        const conn = this.peer.connect(peerId, { reliable: true });
-        this.handleConnection(conn);
+        // Leave current room if any
+        if (this.currentRoom) {
+            this.leaveRoom(false);
+        }
+
+        this.currentRoom = roomId;
+        this.messages = [];
+
+        // Update URL
+        history.replaceState(null, '', `#${roomId}`);
+
+        // Update UI
+        document.getElementById('roomSection').style.display = 'block';
+        document.getElementById('currentRoomName').textContent = roomId.slice(0, 16) + '...';
+        document.getElementById('emptyState').style.display = 'none';
+        document.getElementById('chatView').style.display = 'flex';
+        document.getElementById('chatRoomName').textContent = 'Room: ' + roomId.slice(0, 12);
+        document.getElementById('roomInput').value = '';
+
+        // On mobile, collapse sidebar
+        if (window.innerWidth <= 768) {
+            document.getElementById('sidebar').classList.add('collapsed');
+        }
+
+        this.showToast('Joined room! Share the link to invite others.');
+        this.updatePeersList();
+        this.renderMessages();
+
+        // The room ID acts as a signaling channel
+        // Other peers who know the room ID can connect to us
+        // We need a discovery mechanism - for now, copy link to share
     }
 
-    handleConnection(conn) {
-        conn.on('open', () => {
-            // Check if already approved
-            if (this.approvedPeers.has(conn.peer)) {
-                this.acceptConnection(conn);
-            } else {
-                // Pending - wait for request message or acceptance
-                conn.on('data', (data) => {
-                    if (data.type === 'connect-request') {
-                        this.pendingConnections.set(conn.peer, { conn, name: data.name });
-                        this.showConnectionRequest(conn.peer, data.name);
-                    } else if (data.type === 'connect-accepted') {
-                        // The other peer accepted our request - complete the connection
-                        this.acceptConnection(conn);
-                    } else if (data.type === 'username') {
-                        // Store their username even during pending state
-                        this.peerNames.set(conn.peer, data.name);
-                        this.savePeerNames();
-                    }
-                });
-                // Send our request
-                conn.send({ type: 'connect-request', name: this.username });
-            }
-        });
+    leaveRoom(showEmpty = true) {
+        // Disconnect all peers
+        this.connections.forEach((conn) => conn.close());
+        this.connections.clear();
+        this.peerNames.clear();
+        this.peerFingerprints.clear();
 
-        conn.on('close', () => {
-            this.connections.delete(conn.peer);
-            this.pendingConnections.delete(conn.peer);
+        this.currentRoom = null;
+        this.messages = [];
+
+        // Update URL
+        history.replaceState(null, '', window.location.pathname);
+
+        // Update UI
+        document.getElementById('roomSection').style.display = 'none';
+        if (showEmpty) {
+            document.getElementById('emptyState').style.display = 'flex';
+            document.getElementById('chatView').style.display = 'none';
+        }
+
+        this.updatePeersList();
+        this.showToast('Left the room');
+    }
+
+    copyRoomLink() {
+        const url = `${window.location.origin}${window.location.pathname}#${this.currentRoom}`;
+        navigator.clipboard.writeText(url);
+        this.showToast('Room link copied! Share it with friends.');
+    }
+
+    checkUrlRoom() {
+        const hash = window.location.hash.slice(1);
+        if (hash && hash.length > 8) {
+            document.getElementById('roomInput').value = hash;
+            this.showToast('Room link detected! Click Join to enter.');
+        }
+    }
+
+    // Connection Handling
+    connectToPeer(peerId) {
+        if (this.connections.has(peerId) || peerId === this.peer.id) return;
+
+        console.log('Connecting to peer:', peerId.slice(0, 8));
+        const conn = this.peer.connect(peerId, { reliable: true });
+        this.setupConnection(conn);
+    }
+
+    handleIncomingConnection(conn) {
+        console.log('Incoming connection from:', conn.peer.slice(0, 8));
+        this.setupConnection(conn);
+    }
+
+    async setupConnection(conn) {
+        conn.on('open', async () => {
+            this.connections.set(conn.peer, conn);
+
+            // Exchange info
+            const myPublicKey = await window.e2eCrypto.getPublicKeyString();
+            conn.send({
+                type: 'handshake',
+                name: this.username,
+                publicKey: myPublicKey,
+                fingerprint: this.myFingerprint,
+                room: this.currentRoom
+            });
+
             this.updatePeersList();
         });
 
-        conn.on('error', (err) => console.error('Connection error:', err));
+        conn.on('data', (data) => this.handleData(conn.peer, data));
+
+        conn.on('close', () => {
+            this.connections.delete(conn.peer);
+            this.peerNames.delete(conn.peer);
+            this.peerFingerprints.delete(conn.peer);
+            this.updatePeersList();
+
+            const name = this.peerNames.get(conn.peer) || 'A peer';
+            this.addSystemMessage(`${name} left the room`);
+        });
+
+        conn.on('error', (err) => {
+            console.error('Connection error:', err);
+        });
     }
 
-    async acceptConnection(conn) {
-        this.connections.set(conn.peer, conn);
-        this.approvedPeers.add(conn.peer);
-        localStorage.setItem('p2p_approved', JSON.stringify([...this.approvedPeers]));
+    async handleData(peerId, data) {
+        switch (data.type) {
+            case 'handshake':
+                this.peerNames.set(peerId, data.name);
+                this.peerFingerprints.set(peerId, data.fingerprint);
 
-        // Send our username
-        conn.send({ type: 'username', name: this.username });
-        conn.send({ type: 'connect-accepted' });
+                // Import their public key
+                await window.e2eCrypto.importPeerPublicKey(peerId, data.publicKey);
 
-        // Exchange public keys for E2E encryption
-        const myPublicKey = await window.e2eCrypto.getPublicKeyString();
-        conn.send({ type: 'public-key', key: myPublicKey });
-        console.log('Sent public key to', conn.peer.slice(0, 8));
-
-        this.setupConnectionHandlers(conn);
-        this.updatePeersList();
-        this.selectPeer(conn.peer);
-        this.showToast(`Connected to ${this.getPeerName(conn.peer)}`);
-    }
-
-    setupConnectionHandlers(conn) {
-        conn.on('data', async (data) => {
-            if (data.type === 'message') {
-                const decrypted = await window.e2eCrypto.decrypt(data.content, conn.peer);
-                this.receiveMessage(conn.peer, decrypted, data.timestamp);
-                this.playNotificationSound();
-            } else if (data.type === 'media') {
-                this.receiveMedia(conn.peer, data);
-                this.playNotificationSound();
-            } else if (data.type === 'public-key') {
-                // Import the peer's public key for E2E encryption
-                await window.e2eCrypto.importPeerPublicKey(conn.peer, data.key);
-                this.showToast('🔐 Secure channel established!');
-            } else if (data.type === 'voice-key') {
-                // Voice key is sent as raw array (not encrypted, but only after connection)
-                const raw = new Uint8Array(data.key);
-                await window.voiceCrypto.importKey(raw);
-                console.log('Voice key imported from', conn.peer);
-            } else if (data.type === 'username') {
-                this.peerNames.set(conn.peer, data.name);
-                this.savePeerNames();
                 this.updatePeersList();
-                if (this.currentPeer === conn.peer) this.updateChatHeader();
-            } else if (data.type === 'typing') {
-                this.showTypingIndicator(conn.peer, data.isTyping);
-            } else if (data.type === 'connect-accepted') {
-                this.acceptConnection(conn);
-            }
-        });
-    }
+                this.addSystemMessage(`${data.name} joined the room`);
 
-    showConnectionRequest(peerId, name) {
-        const peerName = name || peerId.slice(0, 8) + '...';
-        if (confirm(`${peerName} wants to connect. Accept?`)) {
-            const pending = this.pendingConnections.get(peerId);
-            if (pending) {
-                this.peerNames.set(peerId, name);
-                this.acceptConnection(pending.conn);
-                this.pendingConnections.delete(peerId);
-            }
-        } else {
-            const pending = this.pendingConnections.get(peerId);
-            if (pending) pending.conn.close();
-            this.pendingConnections.delete(peerId);
+                // Share our peer list with them (for mesh networking)
+                this.sharePeerList(peerId);
+                break;
+
+            case 'peer-list':
+                // Connect to other peers in the room
+                data.peers.forEach(p => {
+                    if (p !== this.peer.id && !this.connections.has(p)) {
+                        this.connectToPeer(p);
+                    }
+                });
+                break;
+
+            case 'message':
+                const decrypted = await window.e2eCrypto.decrypt(data.content, peerId);
+                this.receiveMessage(peerId, decrypted, data.timestamp);
+                break;
+
+            case 'media':
+                this.receiveMedia(peerId, data);
+                break;
+
+            case 'username':
+                this.peerNames.set(peerId, data.name);
+                this.updatePeersList();
+                break;
+
+            case 'typing':
+                this.handleTypingIndicator(peerId, data.isTyping);
+                break;
+
+            case 'voice-key':
+                await window.voiceCrypto.importKey(new Uint8Array(data.key));
+                break;
         }
     }
 
-    updatePeersList() {
-        const list = document.getElementById('peersList');
-
-        if (this.connections.size === 0) {
-            list.innerHTML = '<p class="no-peers">No connections yet</p>';
-            return;
+    sharePeerList(toPeerId) {
+        const conn = this.connections.get(toPeerId);
+        if (conn) {
+            const peers = Array.from(this.connections.keys()).filter(p => p !== toPeerId);
+            conn.send({ type: 'peer-list', peers });
         }
+    }
 
-        list.innerHTML = '';
+    broadcast(data, excludePeerId = null) {
         this.connections.forEach((conn, peerId) => {
-            const name = this.getPeerName(peerId);
-            const div = document.createElement('div');
-            div.className = 'peer-item' + (this.currentPeer === peerId ? ' active' : '');
-            div.innerHTML = `
-                <div class="peer-avatar">${name.charAt(0).toUpperCase()}</div>
-                <div class="peer-info">
-                    <div class="peer-name">${name}</div>
-                    <div class="peer-status">Connected</div>
-                </div>
-            `;
-            div.onclick = () => this.selectPeer(peerId);
-            list.appendChild(div);
+            if (peerId !== excludePeerId && conn.open) {
+                conn.send(data);
+            }
         });
     }
 
-    selectPeer(peerId) {
-        this.currentPeer = peerId;
-        this.updatePeersList();
-
-        document.getElementById('emptyState').style.display = 'none';
-        document.getElementById('chatView').style.display = 'flex';
-        document.getElementById('chatPeerName').textContent = peerId.slice(0, 12) + '...';
-        document.getElementById('chatAvatar').textContent = peerId.charAt(0).toUpperCase();
-
-        this.renderMessages(peerId);
-    }
-
+    // Messaging
     async sendMessage() {
         const input = document.getElementById('messageInput');
         const text = input.value.trim();
 
-        if (!text || !this.currentPeer) return;
-
-        const conn = this.connections.get(this.currentPeer);
-        if (!conn) return;
+        if (!text || !this.currentRoom) return;
 
         const timestamp = Date.now();
-        const encrypted = await window.e2eCrypto.encrypt(text, this.currentPeer);
 
-        conn.send({
-            type: 'message',
-            content: encrypted,
-            timestamp
-        });
+        // Encrypt and send to all peers
+        for (const [peerId, conn] of this.connections) {
+            if (conn.open) {
+                try {
+                    const encrypted = await window.e2eCrypto.encrypt(text, peerId);
+                    conn.send({ type: 'message', content: encrypted, timestamp });
+                } catch (e) {
+                    console.error('Failed to encrypt for', peerId, e);
+                }
+            }
+        }
 
-        this.addMessage(this.currentPeer, text, timestamp, true);
+        // Add to our own messages
+        this.addMessage(null, text, timestamp, true);
         input.value = '';
     }
 
     receiveMessage(peerId, text, timestamp) {
         this.addMessage(peerId, text, timestamp, false);
-
-        if (this.currentPeer === peerId) {
-            this.renderMessages(peerId);
-        } else {
-            this.showToast(`New message from ${peerId.slice(0, 8)}...`);
-        }
+        this.playNotificationSound();
     }
 
     addMessage(peerId, text, timestamp, sent) {
-        if (!this.messages[peerId]) {
-            this.messages[peerId] = [];
-        }
+        const senderName = sent ? this.username : (this.peerNames.get(peerId) || 'Unknown');
 
-        this.messages[peerId].push({ text, timestamp, sent });
-        this.saveMessages();
+        this.messages.push({
+            peerId,
+            senderName,
+            text,
+            timestamp,
+            sent
+        });
 
-        if (this.currentPeer === peerId) {
-            this.renderMessages(peerId);
-        }
+        this.renderMessages();
     }
 
-    renderMessages(peerId) {
+    addSystemMessage(text) {
+        this.messages.push({
+            system: true,
+            text,
+            timestamp: Date.now()
+        });
+        this.renderMessages();
+    }
+
+    renderMessages() {
         const container = document.getElementById('messagesContainer');
         container.innerHTML = '';
 
-        const messages = this.messages[peerId] || [];
-        messages.forEach(msg => {
+        this.messages.forEach(msg => {
             const div = document.createElement('div');
-            div.className = 'message' + (msg.sent ? ' sent' : '');
 
-            const time = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-            let content = '';
-            if (msg.isMedia) {
-                if (msg.mediaType === 'image') {
-                    content = `<img src="${msg.content}" class="media-image" alt="Shared image">`;
-                } else if (msg.mediaType === 'video') {
-                    content = `<video src="${msg.content}" class="media-video" controls></video>`;
-                } else if (msg.mediaType === 'audio') {
-                    content = `<audio src="${msg.content}" class="media-audio" controls></audio>`;
-                }
+            if (msg.system) {
+                div.className = 'system-message';
+                div.innerHTML = `<span>${msg.text}</span>`;
+                div.style.cssText = 'text-align: center; padding: 8px; font-size: 12px; color: var(--text-muted);';
             } else {
-                content = `<div class="message-text">${this.escapeHtml(msg.text)}</div>`;
+                div.className = 'message' + (msg.sent ? ' sent' : '');
+                const time = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const initial = msg.senderName.charAt(0).toUpperCase();
+
+                let content = '';
+                if (msg.isMedia) {
+                    if (msg.mediaType === 'image') {
+                        content = `<img src="${msg.content}" class="media-image" alt="Image">`;
+                    } else if (msg.mediaType === 'video') {
+                        content = `<video src="${msg.content}" class="media-video" controls></video>`;
+                    } else if (msg.mediaType === 'audio') {
+                        content = `<audio src="${msg.content}" class="media-audio" controls></audio>`;
+                    }
+                } else {
+                    content = `<div class="message-text">${this.escapeHtml(msg.text)}</div>`;
+                }
+
+                div.innerHTML = `
+                    <div class="message-content">
+                        <div class="message-avatar">${initial}</div>
+                        <div class="message-bubble">
+                            <div class="message-sender">${this.escapeHtml(msg.senderName)}</div>
+                            ${content}
+                            <div class="message-time">${time}</div>
+                        </div>
+                    </div>
+                `;
             }
 
-            div.innerHTML = `
-                <div class="message-bubble">
-                    ${content}
-                    <div class="message-time">${time}</div>
-                </div>
-            `;
             container.appendChild(div);
         });
 
         container.scrollTop = container.scrollHeight;
     }
 
-    // Voice Calls
-    async startCall() {
-        if (!this.currentPeer) {
-            this.showToast('Select a peer first');
+    // Typing Indicator
+    sendTypingIndicator() {
+        if (!this.currentRoom) return;
+
+        this.broadcast({ type: 'typing', isTyping: true });
+
+        clearTimeout(this.typingTimeout);
+        this.typingTimeout = setTimeout(() => {
+            this.broadcast({ type: 'typing', isTyping: false });
+        }, 2000);
+    }
+
+    handleTypingIndicator(peerId, isTyping) {
+        const name = this.peerNames.get(peerId) || 'Someone';
+
+        if (isTyping) {
+            this.typingPeers.add(name);
+        } else {
+            this.typingPeers.delete(name);
+        }
+
+        const bar = document.getElementById('typingBar');
+        if (this.typingPeers.size > 0) {
+            const names = Array.from(this.typingPeers);
+            const text = names.length === 1
+                ? `${names[0]} is typing...`
+                : `${names.slice(0, 2).join(', ')}${names.length > 2 ? ' and others' : ''} are typing...`;
+            document.getElementById('typingText').textContent = text;
+            bar.style.display = 'block';
+        } else {
+            bar.style.display = 'none';
+        }
+    }
+
+    // Peer Verification
+    showVerifyModal(peerId) {
+        const name = this.peerNames.get(peerId) || peerId.slice(0, 12);
+        const fingerprint = this.peerFingerprints.get(peerId) || 'Unknown';
+
+        document.getElementById('verifyPeerName').textContent = name;
+        document.getElementById('verifyFingerprint').textContent = fingerprint;
+        document.getElementById('verifyModal').style.display = 'flex';
+        document.getElementById('verifyModal').dataset.peerId = peerId;
+    }
+
+    confirmVerification() {
+        const peerId = document.getElementById('verifyModal').dataset.peerId;
+        this.verifiedPeers.add(peerId);
+        localStorage.setItem('verified_peers', JSON.stringify([...this.verifiedPeers]));
+        document.getElementById('verifyModal').style.display = 'none';
+        this.updatePeersList();
+        this.showToast('Peer verified! ✓');
+    }
+
+    updatePeersList() {
+        const list = document.getElementById('peersList');
+        const count = this.connections.size;
+
+        document.getElementById('peerCount').textContent = count;
+        document.getElementById('peerCountBadge').textContent = `${count} peer${count !== 1 ? 's' : ''}`;
+
+        if (count === 0) {
+            list.innerHTML = '<p class="no-peers">No peers connected yet</p>';
             return;
         }
 
-        console.log('Calling peer', this.currentPeer);
+        list.innerHTML = '';
+        this.connections.forEach((conn, peerId) => {
+            const name = this.peerNames.get(peerId) || peerId.slice(0, 8);
+            const isVerified = this.verifiedPeers.has(peerId);
+            const initial = name.charAt(0).toUpperCase();
 
-        try {
-            // Generate and share voice encryption key
-            const rawKey = await window.voiceCrypto.generateKey();
-            const conn = this.connections.get(this.currentPeer);
-            if (conn) {
-                conn.send({ type: 'voice-key', key: Array.from(new Uint8Array(rawKey)) });
+            const div = document.createElement('div');
+            div.className = 'peer-item';
+            div.innerHTML = `
+                <div class="peer-avatar">${initial}</div>
+                <div class="peer-info">
+                    <div class="peer-name">${this.escapeHtml(name)}</div>
+                    <div class="peer-status ${isVerified ? '' : 'unverified'}">
+                        ${isVerified ? '✓ Verified' : '⚠ Unverified'}
+                    </div>
+                </div>
+                ${!isVerified ? '<button class="btn-verify">Verify</button>' : ''}
+            `;
+
+            const verifyBtn = div.querySelector('.btn-verify');
+            if (verifyBtn) {
+                verifyBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    this.showVerifyModal(peerId);
+                };
             }
 
-            this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-            const call = this.peer.call(this.currentPeer, this.localStream);
+            list.appendChild(div);
+        });
+    }
 
-            this.handleOutgoingCall(call);
+    // Voice Calls (Group Call)
+    async startGroupCall() {
+        if (this.connections.size === 0) {
+            this.showToast('No peers to call');
+            return;
+        }
+
+        try {
+            // Generate shared voice key
+            const rawKey = await window.voiceCrypto.generateKey();
+            this.broadcast({ type: 'voice-key', key: Array.from(new Uint8Array(rawKey)) });
+
+            this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+            // Call each peer
+            this.connections.forEach((conn, peerId) => {
+                const call = this.peer.call(peerId, this.localStream);
+                this.handleOutgoingCall(call);
+            });
 
             document.getElementById('callOverlay').classList.add('active');
-            document.getElementById('callPeerName').textContent = this.currentPeer.slice(0, 12) + '...';
-            document.getElementById('callStatus').textContent = 'Calling...';
+            document.getElementById('callPeerName').textContent = 'Group Call';
+            document.getElementById('callStatus').textContent = 'Connecting...';
             document.getElementById('btnAcceptCall').style.display = 'none';
-            document.getElementById('callEncryptionBadge').textContent =
-                window.voiceCrypto.supported ? '🔐 E2E Encrypted' : '🔒 Transport Encrypted';
         } catch (err) {
-            console.error('Error starting call:', err);
+            console.error('Call error:', err);
             this.showToast('Could not access microphone');
         }
     }
@@ -420,223 +607,170 @@ class P2PChat {
         this.calls.set(call.peer, call);
 
         call.on('stream', (remoteStream) => {
-            console.log('Received remote audio stream');
-            document.getElementById('remoteAudio').srcObject = remoteStream;
+            // Mix all remote audio
+            const audio = document.getElementById('remoteAudio');
+            audio.srcObject = remoteStream;
             document.getElementById('callStatus').textContent = 'Connected';
-            this.showToast('Call connected!');
-
-            // Apply voice decryption to receivers
-            const pc = call.peerConnection;
-            if (pc) {
-                pc.getReceivers().forEach(r => {
-                    window.voiceCrypto.applyToReceiver(r);
-                });
-            }
         });
-
-        // Apply voice encryption to senders immediately
-        const pc = call.peerConnection;
-        if (pc) {
-            pc.getSenders().forEach(s => {
-                window.voiceCrypto.applyToSender(s);
-            });
-        }
 
         call.on('close', () => {
-            console.log('Call closed');
-            this.endCall();
-        });
-
-        call.on('error', (err) => {
-            console.error('Outgoing call error:', err);
-            this.showToast('Call error: ' + err.message);
-            this.endCall();
+            this.calls.delete(call.peer);
+            if (this.calls.size === 0) this.endCall();
         });
     }
 
     handleIncomingCall(call) {
-        console.log('Incoming call from', call.peer);
-
-        // Only accept calls from connected/approved peers
         if (!this.connections.has(call.peer)) {
-            console.warn('Rejecting call from unknown peer:', call.peer);
             call.close();
             return;
         }
 
         this.pendingCall = call;
-
-        // Set up event listeners immediately
-        call.on('close', () => {
-            if (this.pendingCall === call) {
-                this.pendingCall = null;
-                document.getElementById('callOverlay').classList.remove('active');
-                this.showToast('Call ended');
-            }
-        });
-
-        call.on('error', (err) => {
-            console.error('Incoming call error:', err);
-            this.showToast('Call error: ' + err.message);
-            this.endCall();
-        });
+        const name = this.peerNames.get(call.peer) || 'Someone';
 
         document.getElementById('callOverlay').classList.add('active');
-        document.getElementById('callPeerName').textContent = this.getPeerName(call.peer);
+        document.getElementById('callPeerName').textContent = name;
         document.getElementById('callStatus').textContent = 'Incoming call...';
         document.getElementById('btnAcceptCall').style.display = 'flex';
-        document.getElementById('callEncryptionBadge').textContent =
-            call.metadata?.encrypted ? '🔐 E2E Encrypted' : '🔒 Transport Encrypted';
     }
 
     async acceptCall() {
         if (!this.pendingCall) return;
 
-        console.log('Accepting call');
-        const call = this.pendingCall;
-
         try {
-            this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-            // Set up stream listener BEFORE answering (critical!)
-            call.on('stream', (remoteStream) => {
-                console.log('Received remote audio stream');
+            this.pendingCall.on('stream', (remoteStream) => {
                 document.getElementById('remoteAudio').srcObject = remoteStream;
                 document.getElementById('callStatus').textContent = 'Connected';
-
-                // Apply voice decryption to receivers
-                const pc = call.peerConnection;
-                if (pc) {
-                    pc.getReceivers().forEach(r => {
-                        window.voiceCrypto.applyToReceiver(r);
-                    });
-                }
             });
 
-            // Set up close listener for when caller hangs up
-            call.on('close', () => {
-                console.log('Call closed by remote peer');
-                this.endCall();
-            });
-
-            // Now answer the call
-            call.answer(this.localStream);
-
-            // Apply voice encryption to senders
-            const pc = call.peerConnection;
-            if (pc) {
-                pc.getSenders().forEach(s => {
-                    window.voiceCrypto.applyToSender(s);
-                });
-            }
-
-            this.calls.set(call.peer, call);
+            this.pendingCall.answer(this.localStream);
+            this.calls.set(this.pendingCall.peer, this.pendingCall);
             document.getElementById('btnAcceptCall').style.display = 'none';
             this.pendingCall = null;
-
-            this.showToast('Call connected!');
         } catch (err) {
-            console.error('Error accepting call:', err);
+            console.error('Accept call error:', err);
             this.showToast('Could not access microphone');
-            call.close();
         }
     }
 
     endCall() {
         if (this.localStream) {
-            this.localStream.getTracks().forEach(track => track.stop());
+            this.localStream.getTracks().forEach(t => t.stop());
             this.localStream = null;
         }
 
         this.calls.forEach(call => call.close());
         this.calls.clear();
 
+        if (this.pendingCall) {
+            this.pendingCall.close();
+            this.pendingCall = null;
+        }
+
         document.getElementById('remoteAudio').srcObject = null;
         document.getElementById('callOverlay').classList.remove('active');
     }
 
-    // Storage
-    saveMessages() {
-        localStorage.setItem('p2p_messages', JSON.stringify(this.messages));
+    // Media Sharing
+    async handleMediaSelect(e) {
+        const file = e.target.files[0];
+        if (!file || !this.currentRoom) return;
+
+        const maxSize = 10 * 1024 * 1024;
+        if (file.size > maxSize) {
+            this.showToast('File too large (max 10MB)');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            const mediaType = file.type.startsWith('image') ? 'image'
+                : file.type.startsWith('video') ? 'video' : 'audio';
+
+            const mediaData = {
+                type: 'media',
+                mediaType,
+                content: reader.result,
+                fileName: file.name,
+                timestamp: Date.now()
+            };
+
+            this.broadcast(mediaData);
+            this.addMedia(null, mediaData, true);
+        };
+        reader.readAsDataURL(file);
+        e.target.value = '';
     }
 
-    loadSavedMessages() {
-        const saved = localStorage.getItem('p2p_messages');
-        if (saved) {
-            this.messages = JSON.parse(saved);
+    addMedia(peerId, data, sent) {
+        const senderName = sent ? this.username : (this.peerNames.get(peerId) || 'Unknown');
+
+        this.messages.push({
+            peerId,
+            senderName,
+            isMedia: true,
+            mediaType: data.mediaType,
+            content: data.content,
+            timestamp: data.timestamp,
+            sent
+        });
+
+        this.renderMessages();
+    }
+
+    receiveMedia(peerId, data) {
+        this.addMedia(peerId, data, false);
+        this.playNotificationSound();
+    }
+
+    // Audio Recording
+    async toggleAudioRecording() {
+        const btn = document.getElementById('btnRecordAudio');
+
+        if (this.mediaRecorder?.state === 'recording') {
+            this.mediaRecorder.stop();
+            btn.textContent = '🎙️';
+            btn.classList.remove('recording');
+        } else {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                this.audioChunks = [];
+                this.mediaRecorder = new MediaRecorder(stream);
+
+                this.mediaRecorder.ondataavailable = (e) => this.audioChunks.push(e.data);
+
+                this.mediaRecorder.onstop = () => {
+                    const blob = new Blob(this.audioChunks, { type: 'audio/webm' });
+                    stream.getTracks().forEach(t => t.stop());
+
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        const mediaData = {
+                            type: 'media',
+                            mediaType: 'audio',
+                            content: reader.result,
+                            fileName: `voice_${Date.now()}.webm`,
+                            timestamp: Date.now()
+                        };
+                        this.broadcast(mediaData);
+                        this.addMedia(null, mediaData, true);
+                    };
+                    reader.readAsDataURL(blob);
+                };
+
+                this.mediaRecorder.start();
+                btn.textContent = '⏹️';
+                btn.classList.add('recording');
+                this.showToast('Recording...');
+            } catch (err) {
+                this.showToast('Could not access microphone');
+            }
         }
     }
 
-    // Peer Names
-    getPeerName(peerId) {
-        return this.peerNames.get(peerId) || peerId.slice(0, 8) + '...';
-    }
-
-    savePeerNames() {
-        const obj = Object.fromEntries(this.peerNames);
-        localStorage.setItem('p2p_peerNames', JSON.stringify(obj));
-    }
-
-    loadPeerNames() {
-        const saved = localStorage.getItem('p2p_peerNames');
-        if (saved) {
-            const obj = JSON.parse(saved);
-            this.peerNames = new Map(Object.entries(obj));
-        }
-    }
-
-    updateChatHeader() {
-        if (!this.currentPeer) return;
-        const name = this.getPeerName(this.currentPeer);
-        document.getElementById('chatPeerName').textContent = name;
-        document.getElementById('chatAvatar').textContent = name.charAt(0).toUpperCase();
-    }
-
-    // URL-based invite links
-    checkUrlInvite() {
-        const hash = window.location.hash.slice(1);
-        if (hash && hash.length > 10 && hash !== this.peer.id) {
-            document.getElementById('friendIdInput').value = hash;
-            this.showToast('Invite link detected! Click Connect to join.');
-            // Clear hash after reading
-            history.replaceState(null, '', window.location.pathname);
-        }
-    }
-
-    // Heartbeat keep-alive for mobile
-    startHeartbeat() {
-        setInterval(() => {
-            this.connections.forEach((conn) => {
-                if (conn.open) {
-                    conn.send({ type: 'ping' });
-                }
-            });
-        }, 30000); // Every 30 seconds
-    }
-
-    // Typing Indicators
-    sendTypingIndicator() {
-        if (!this.currentPeer) return;
-        const conn = this.connections.get(this.currentPeer);
-        if (!conn) return;
-
-        conn.send({ type: 'typing', isTyping: true });
-
-        clearTimeout(this.typingTimeout);
-        this.typingTimeout = setTimeout(() => {
-            conn.send({ type: 'typing', isTyping: false });
-        }, 2000);
-    }
-
-    showTypingIndicator(peerId, isTyping) {
-        if (this.currentPeer !== peerId) return;
-        const indicator = document.getElementById('typingIndicator');
-        if (indicator) {
-            indicator.style.display = isTyping ? 'block' : 'none';
-        }
-    }
-
-    // Notification Sound
+    // Utilities
     playNotificationSound() {
         if (document.hidden) {
             const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdH2Onrq8vLy8vLy4p5R0W1RcdIecsNHcvLy8vLy0p4x0YGNwiZuqu8na3Ly8vLi0p4x0YGRyipyqu8na1Ly8vLi0p4x0YGNyipyru8na1Ly8vLi0p4x0YGNyipyru8rZ1Ly8vLi0p4x0YGNwiZuruszZ1Ly8vLiwo4hxX2BvhpequszZ1Ly8vLiroYZvXl9vhpequczZ1Ly8u7WpnIFsYGJ0');
@@ -645,7 +779,6 @@ class P2PChat {
         }
     }
 
-    // Utils
     escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text;
@@ -664,158 +797,6 @@ class P2PChat {
         toast.classList.add('show');
 
         setTimeout(() => toast.classList.remove('show'), 3000);
-    }
-
-    // Clear all data
-    clearAllData() {
-        if (confirm('This will delete all messages, connections, and peer ID. Continue?')) {
-            localStorage.clear();
-            this.messages = {};
-            this.connections.forEach(conn => conn.close());
-            this.connections.clear();
-            this.peer.destroy();
-            this.showToast('All data cleared!');
-            setTimeout(() => location.reload(), 1000);
-        }
-    }
-
-    // Delete current chat only
-    deleteCurrentChat() {
-        if (!this.currentPeer) return;
-
-        const peerName = this.currentPeer.slice(0, 12) + '...';
-        if (confirm(`Delete chat with ${peerName}? This will remove all messages.`)) {
-            // Delete messages for this peer
-            delete this.messages[this.currentPeer];
-            this.saveMessages();
-
-            // Close connection if still connected
-            const conn = this.connections.get(this.currentPeer);
-            if (conn) {
-                conn.close();
-                this.connections.delete(this.currentPeer);
-            }
-
-            // Reset UI
-            this.currentPeer = null;
-            this.updatePeersList();
-            document.getElementById('chatView').style.display = 'none';
-            document.getElementById('emptyState').style.display = 'flex';
-
-            this.showToast('Chat deleted');
-        }
-    }
-
-    // Media sharing
-    showMediaOptions() {
-        document.getElementById('mediaFileInput').click();
-    }
-
-    async handleMediaSelect(e) {
-        const file = e.target.files[0];
-        if (!file || !this.currentPeer) return;
-
-        const maxSize = 10 * 1024 * 1024; // 10MB limit
-        if (file.size > maxSize) {
-            this.showToast('File too large (max 10MB)');
-            return;
-        }
-
-        const reader = new FileReader();
-        reader.onload = async () => {
-            const base64 = reader.result;
-            const conn = this.connections.get(this.currentPeer);
-            if (!conn) return;
-
-            const mediaData = {
-                type: 'media',
-                mediaType: file.type.startsWith('image') ? 'image' :
-                    file.type.startsWith('video') ? 'video' : 'audio',
-                content: base64,
-                fileName: file.name,
-                timestamp: Date.now()
-            };
-
-            conn.send(mediaData);
-            this.addMedia(this.currentPeer, mediaData, true);
-        };
-        reader.readAsDataURL(file);
-        e.target.value = '';
-    }
-
-    addMedia(peerId, data, sent) {
-        if (!this.messages[peerId]) {
-            this.messages[peerId] = [];
-        }
-        this.messages[peerId].push({
-            isMedia: true,
-            mediaType: data.mediaType,
-            content: data.content,
-            fileName: data.fileName,
-            timestamp: data.timestamp,
-            sent
-        });
-        this.saveMessages();
-        if (this.currentPeer === peerId) {
-            this.renderMessages(peerId);
-        }
-    }
-
-    receiveMedia(peerId, data) {
-        this.addMedia(peerId, data, false);
-        if (this.currentPeer !== peerId) {
-            this.showToast(`New media from ${peerId.slice(0, 8)}...`);
-        }
-    }
-
-    // Audio recording
-    async toggleAudioRecording() {
-        const btn = document.getElementById('btnRecordAudio');
-
-        if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
-            this.mediaRecorder.stop();
-            btn.textContent = '🎙️';
-            btn.classList.remove('recording');
-        } else {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                this.audioChunks = [];
-                this.mediaRecorder = new MediaRecorder(stream);
-
-                this.mediaRecorder.ondataavailable = (e) => {
-                    this.audioChunks.push(e.data);
-                };
-
-                this.mediaRecorder.onstop = () => {
-                    const blob = new Blob(this.audioChunks, { type: 'audio/webm' });
-                    stream.getTracks().forEach(t => t.stop());
-
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                        const conn = this.connections.get(this.currentPeer);
-                        if (!conn) return;
-
-                        const mediaData = {
-                            type: 'media',
-                            mediaType: 'audio',
-                            content: reader.result,
-                            fileName: `recording_${Date.now()}.webm`,
-                            timestamp: Date.now()
-                        };
-                        conn.send(mediaData);
-                        this.addMedia(this.currentPeer, mediaData, true);
-                    };
-                    reader.readAsDataURL(blob);
-                };
-
-                this.mediaRecorder.start();
-                btn.textContent = '⏹️';
-                btn.classList.add('recording');
-                this.showToast('Recording...');
-            } catch (err) {
-                this.showToast('Could not access microphone');
-            }
-        }
     }
 }
 
