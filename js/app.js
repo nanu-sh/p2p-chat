@@ -914,6 +914,8 @@ class P2PChat {
             this.callPeerName = roomData?.peers.get(peerId)?.name || 'Unknown Peer';
 
             // Show incoming call UI
+            this.addSystemMessage(roomId, `📞 Incoming Call from ${this.callPeerName}`);
+            this.playNotificationSound(); // Adding sound while I'm here
             document.getElementById('callOverlay').classList.add('active');
             document.getElementById('callOverlay').classList.add('incoming'); // Add pulse animation
             document.getElementById('callPeerName').textContent = this.callPeerName;
@@ -981,6 +983,7 @@ class P2PChat {
         this.callState = 'calling';
         this.callStartTime = null;
 
+        this.addSystemMessage(this.activeRoomId, '📞 Outgoing Call');
         document.getElementById('callOverlay').classList.add('active');
         document.getElementById('callOverlay').classList.remove('incoming');
         document.getElementById('callPeerName').textContent = 'Calling Group...';
@@ -1072,6 +1075,14 @@ class P2PChat {
 
     endCall() {
         this.callState = null;
+
+        // Log call duration
+        if (this.callStartTime && this.activeRoomId) {
+            const diff = Math.floor((Date.now() - this.callStartTime) / 1000);
+            const mins = Math.floor(diff / 60).toString().padStart(2, '0');
+            const secs = (diff % 60).toString().padStart(2, '0');
+            this.addSystemMessage(this.activeRoomId, `📞 Call ended • ${mins}:${secs}`);
+        }
 
         // Stop UI
         document.getElementById('callOverlay').classList.remove('active');
