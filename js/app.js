@@ -145,6 +145,12 @@ class P2PChat {
 
         // Typing indicator
         document.getElementById('messageInput').oninput = () => this.sendTypingIndicator();
+
+        // Fix: Force user interaction for mobile audio playback
+        document.body.addEventListener('click', () => {
+            const audio = document.getElementById('remoteAudio');
+            audio.play().catch(() => { });
+        }, { once: true });
     }
 
     connectToPeer(peerId) {
@@ -163,11 +169,18 @@ class P2PChat {
             if (this.approvedPeers.has(conn.peer)) {
                 this.acceptConnection(conn);
             } else {
-                // Pending - wait for request message
+                // Pending - wait for request message or acceptance
                 conn.on('data', (data) => {
                     if (data.type === 'connect-request') {
                         this.pendingConnections.set(conn.peer, { conn, name: data.name });
                         this.showConnectionRequest(conn.peer, data.name);
+                    } else if (data.type === 'connect-accepted') {
+                        // The other peer accepted our request - complete the connection
+                        this.acceptConnection(conn);
+                    } else if (data.type === 'username') {
+                        // Store their username even during pending state
+                        this.peerNames.set(conn.peer, data.name);
+                        this.savePeerNames();
                     }
                 });
                 // Send our request
@@ -206,7 +219,11 @@ class P2PChat {
                 this.receiveMedia(conn.peer, data);
                 this.playNotificationSound();
             } else if (data.type === 'voice-key') {
-                await window.voiceCrypto.importKey(new Uint8Array(data.key));
+                // Decrypt the voice key using E2E crypto
+                const decrypted = await window.e2eCrypto.decrypt(data.key, conn.peer);
+                const raw = new Uint8Array(JSON.parse(decrypted));
+                await window.voiceCrypto.importKey(raw);
+                console.log('Voice key imported from', conn.peer);
             } else if (data.type === 'username') {
                 this.peerNames.set(conn.peer, data.name);
                 this.savePeerNames();
@@ -356,20 +373,27 @@ class P2PChat {
 
     // Voice Calls
     async startCall() {
-        if (!this.currentPeer) return;
+        if (!this.currentPeer) {
+            this.showToast('Select a peer first');
+            return;
+        }
+
+        console.log('Calling peer', this.currentPeer);
 
         try {
-            // Generate and share voice encryption key
-            const keyData = await window.voiceCrypto.generateKey();
+            // Generate and share voice encryption key (encrypted)
+            const rawKey = await window.voiceCrypto.generateKey();
             const conn = this.connections.get(this.currentPeer);
             if (conn) {
-                conn.send({ type: 'voice-key', key: Array.from(new Uint8Array(keyData)) });
+                const encryptedKey = await window.e2eCrypto.encrypt(
+                    JSON.stringify(Array.from(new Uint8Array(rawKey))),
+                    this.currentPeer
+                );
+                conn.send({ type: 'voice-key', key: encryptedKey });
             }
 
             this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-            const call = this.peer.call(this.currentPeer, this.localStream, {
-                metadata: { encrypted: window.voiceCrypto.supported }
-            });
+            const call = this.peer.call(this.currentPeer, this.localStream);
 
             this.handleOutgoingCall(call);
 
@@ -389,42 +413,125 @@ class P2PChat {
         this.calls.set(call.peer, call);
 
         call.on('stream', (remoteStream) => {
+            console.log('Received remote audio stream');
             document.getElementById('remoteAudio').srcObject = remoteStream;
             document.getElementById('callStatus').textContent = 'Connected';
+            this.showToast('Call connected!');
+
+            // Apply voice decryption to receivers
+            const pc = call.peerConnection;
+            if (pc) {
+                pc.getReceivers().forEach(r => {
+                    window.voiceCrypto.applyToReceiver(r);
+                });
+            }
         });
 
+        // Apply voice encryption to senders immediately
+        const pc = call.peerConnection;
+        if (pc) {
+            pc.getSenders().forEach(s => {
+                window.voiceCrypto.applyToSender(s);
+            });
+        }
+
         call.on('close', () => {
+            console.log('Call closed');
+            this.endCall();
+        });
+
+        call.on('error', (err) => {
+            console.error('Outgoing call error:', err);
+            this.showToast('Call error: ' + err.message);
             this.endCall();
         });
     }
 
     handleIncomingCall(call) {
+        console.log('Incoming call from', call.peer);
+
+        // Only accept calls from connected/approved peers
+        if (!this.connections.has(call.peer)) {
+            console.warn('Rejecting call from unknown peer:', call.peer);
+            call.close();
+            return;
+        }
+
         this.pendingCall = call;
 
+        // Set up event listeners immediately
+        call.on('close', () => {
+            if (this.pendingCall === call) {
+                this.pendingCall = null;
+                document.getElementById('callOverlay').classList.remove('active');
+                this.showToast('Call ended');
+            }
+        });
+
+        call.on('error', (err) => {
+            console.error('Incoming call error:', err);
+            this.showToast('Call error: ' + err.message);
+            this.endCall();
+        });
+
         document.getElementById('callOverlay').classList.add('active');
-        document.getElementById('callPeerName').textContent = call.peer.slice(0, 12) + '...';
+        document.getElementById('callPeerName').textContent = this.getPeerName(call.peer);
         document.getElementById('callStatus').textContent = 'Incoming call...';
         document.getElementById('btnAcceptCall').style.display = 'flex';
+        document.getElementById('callEncryptionBadge').textContent =
+            call.metadata?.encrypted ? '🔐 E2E Encrypted' : '🔒 Transport Encrypted';
     }
 
     async acceptCall() {
         if (!this.pendingCall) return;
 
+        console.log('Accepting call');
+        const call = this.pendingCall;
+
         try {
             this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-            this.pendingCall.answer(this.localStream);
 
-            this.pendingCall.on('stream', (remoteStream) => {
+            // Set up stream listener BEFORE answering (critical!)
+            call.on('stream', (remoteStream) => {
+                console.log('Received remote audio stream');
                 document.getElementById('remoteAudio').srcObject = remoteStream;
                 document.getElementById('callStatus').textContent = 'Connected';
+
+                // Apply voice decryption to receivers
+                const pc = call.peerConnection;
+                if (pc) {
+                    pc.getReceivers().forEach(r => {
+                        window.voiceCrypto.applyToReceiver(r);
+                    });
+                }
             });
 
-            this.calls.set(this.pendingCall.peer, this.pendingCall);
+            // Set up close listener for when caller hangs up
+            call.on('close', () => {
+                console.log('Call closed by remote peer');
+                this.endCall();
+            });
+
+            // Now answer the call
+            call.answer(this.localStream);
+
+            // Apply voice encryption to senders
+            const pc = call.peerConnection;
+            if (pc) {
+                pc.getSenders().forEach(s => {
+                    window.voiceCrypto.applyToSender(s);
+                });
+            }
+
+            this.calls.set(call.peer, call);
             document.getElementById('btnAcceptCall').style.display = 'none';
             this.pendingCall = null;
+
+            this.showToast('Call connected!');
         } catch (err) {
             console.error('Error accepting call:', err);
             this.showToast('Could not access microphone');
+            call.close();
         }
     }
 

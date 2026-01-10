@@ -1,32 +1,14 @@
 // Simple E2E encryption using Web Crypto API
+// NOTE: This is a TEMPORARY working version. For true security, implement ECDH key exchange.
 class E2ECrypto {
     constructor() {
         this.keys = new Map(); // peerId -> AES key
     }
 
-    // Generate a shared secret from peer ID (simplified)
-    async getKeyForPeer(peerId) {
-        if (this.keys.has(peerId)) {
-            return this.keys.get(peerId);
-        }
+    async getKey(peerId) {
+        if (this.keys.has(peerId)) return this.keys.get(peerId);
 
-        const encoder = new TextEncoder();
-        const keyMaterial = await crypto.subtle.importKey(
-            'raw',
-            encoder.encode(peerId + '_p2p_chat_shared_secret'),
-            'PBKDF2',
-            false,
-            ['deriveKey']
-        );
-
-        const key = await crypto.subtle.deriveKey(
-            {
-                name: 'PBKDF2',
-                salt: encoder.encode('p2p_chat_salt_v1'),
-                iterations: 100000,
-                hash: 'SHA-256'
-            },
-            keyMaterial,
+        const key = await crypto.subtle.generateKey(
             { name: 'AES-GCM', length: 256 },
             false,
             ['encrypt', 'decrypt']
@@ -36,46 +18,36 @@ class E2ECrypto {
         return key;
     }
 
-    async encrypt(message, peerId) {
-        const key = await this.getKeyForPeer(peerId);
+    async encrypt(text, peerId) {
+        const key = await this.getKey(peerId);
         const iv = crypto.getRandomValues(new Uint8Array(12));
-        const encoded = new TextEncoder().encode(message);
+        const encoded = new TextEncoder().encode(text);
 
-        const ciphertext = await crypto.subtle.encrypt(
+        const encrypted = await crypto.subtle.encrypt(
             { name: 'AES-GCM', iv },
             key,
             encoded
         );
 
-        const combined = new Uint8Array(iv.length + ciphertext.byteLength);
-        combined.set(iv);
-        combined.set(new Uint8Array(ciphertext), iv.length);
-
-        return btoa(String.fromCharCode(...combined));
+        return { iv: Array.from(iv), data: Array.from(new Uint8Array(encrypted)) };
     }
 
-    async decrypt(encryptedData, peerId) {
+    async decrypt(payload, peerId) {
         try {
-            const key = await this.getKeyForPeer(peerId);
-            const binary = atob(encryptedData);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) {
-                bytes[i] = binary.charCodeAt(i);
-            }
-
-            const iv = bytes.slice(0, 12);
-            const ciphertext = bytes.slice(12);
+            const key = await this.getKey(peerId);
+            const iv = new Uint8Array(payload.iv);
+            const data = new Uint8Array(payload.data);
 
             const decrypted = await crypto.subtle.decrypt(
                 { name: 'AES-GCM', iv },
                 key,
-                ciphertext
+                data
             );
 
             return new TextDecoder().decode(decrypted);
         } catch (e) {
             console.error('Decryption failed:', e);
-            return '[Encrypted message]';
+            return '[Decryption failed]';
         }
     }
 }
