@@ -18,7 +18,6 @@ class P2PChat {
         this.verifiedPeers = new Set(JSON.parse(localStorage.getItem('verified_peers') || '[]'));
         this.roomNames = JSON.parse(localStorage.getItem('p2p_room_names') || '{}'); // roomId -> custom name
         this.activeTab = 'chats';
-        this.replyingTo = null; // { id, sender, text }
         this.joiningRooms = new Set();
         this.roomBroadcasts = new Map(); // roomId -> BroadcastChannel
 
@@ -215,17 +214,6 @@ class P2PChat {
         };
         document.getElementById('messageInput').oninput = () => this.sendTypingIndicator();
 
-        // Message list delegation (Reply)
-        document.getElementById('messagesContainer').onclick = (e) => {
-            const btn = e.target.closest('.btn-reply-msg');
-            if (btn) {
-                const msgId = btn.dataset.id;
-                const roomData = this.rooms.get(this.activeRoomId);
-                const msg = roomData ? roomData.messages.find(m => m.msgId === msgId) : null;
-                if (msg) this.startReply(msg);
-            }
-        };
-
         // Voice call
         // Voice call
         document.getElementById('btnVoiceCall').onclick = () => this.startGroupCall();
@@ -256,7 +244,6 @@ class P2PChat {
         };
 
         // Media
-        document.getElementById('btnCloseReply').onclick = () => this.cancelReply();
         document.getElementById('btnAttach').onclick = () => document.getElementById('mediaFileInput').click();
         document.getElementById('mediaFileInput').onchange = (e) => this.handleMediaSelect(e);
         document.getElementById('btnRecordAudio').onclick = () => this.toggleAudioRecording();
@@ -710,45 +697,22 @@ class P2PChat {
         const timestamp = Date.now();
         const msgId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-        // Construct payload including reply state
-        const payload = {
-            text: text,
-            replyTo: this.replyingTo
-        };
-        const payloadStr = JSON.stringify(payload);
-
         // Encrypt and send to all peers in the active room
         for (const [peerId] of roomData.peers) {
             try {
-                const encrypted = await window.e2eCrypto.encrypt(payloadStr, peerId);
+                const encrypted = await window.e2eCrypto.encrypt(text, peerId);
                 roomData.sendMessage({ content: encrypted, timestamp, msgId }, peerId);
             } catch (e) {
                 console.error('Failed to encrypt for', peerId, e);
             }
         }
 
-        this.addMessage(this.activeRoomId, null, text, timestamp, true, msgId, this.replyingTo);
+        this.addMessage(this.activeRoomId, null, text, timestamp, true, msgId);
         input.value = '';
-        this.cancelReply();
     }
 
-    receiveMessage(roomId, peerId, contentStr, timestamp, msgId) {
-        let text = contentStr;
-        let replyTo = null;
-
-        try {
-            if (contentStr.trim().startsWith('{')) {
-                const payload = JSON.parse(contentStr);
-                if (payload.text !== undefined) {
-                    text = payload.text;
-                    replyTo = payload.replyTo;
-                }
-            }
-        } catch (e) {
-            // Legacy/Plain text
-        }
-
-        this.addMessage(roomId, peerId, text, timestamp, false, msgId, replyTo);
+    receiveMessage(roomId, peerId, text, timestamp, msgId) {
+        this.addMessage(roomId, peerId, text, timestamp, false, msgId);
 
         // Increment unread if not the active room
         const roomData = this.rooms.get(roomId);
@@ -785,25 +749,7 @@ class P2PChat {
         }
     }
 
-    startReply(msg) {
-        this.replyingTo = {
-            id: msg.msgId,
-            sender: msg.senderName,
-            text: msg.isMedia ? (msg.fileName || 'Media') : msg.text
-        };
-        document.getElementById('replySender').textContent = this.replyingTo.sender;
-        document.getElementById('replyText').textContent = this.replyingTo.text;
-        document.getElementById('replyPreview').style.display = 'flex';
-        document.getElementById('messageInput').focus();
-    }
-
-    cancelReply() {
-        this.replyingTo = null;
-        document.getElementById('replyPreview').style.display = 'none';
-        // Reset styles for input if needed
-    }
-
-    addMessage(roomId, peerId, text, timestamp, sent, msgId = null, replyTo = null) {
+    addMessage(roomId, peerId, text, timestamp, sent, msgId = null) {
         const roomData = this.rooms.get(roomId);
         if (!roomData) return;
 
@@ -812,7 +758,7 @@ class P2PChat {
         const status = sent ? 'sent' : null;
         const msgIndex = roomData.messages.length;
 
-        roomData.messages.push({ peerId, senderName, text, timestamp, sent, msgId, status, replyTo });
+        roomData.messages.push({ peerId, senderName, text, timestamp, sent, msgId, status });
         roomData.lastActivity = timestamp;
 
         if (msgId && sent) {
@@ -909,23 +855,10 @@ class P2PChat {
                     }
                 }
 
-                // Reply Quote
-                let replyBlock = '';
-                if (msg.replyTo) {
-                    replyBlock = `
-                        <div class="reply-quote" onclick="document.getElementById('msg-${msg.replyTo.id}')?.scrollIntoView({behavior:'smooth', block:'center'})">
-                            <span class="reply-quote-sender">${this.escapeHtml(msg.replyTo.sender)}</span>
-                            <div class="reply-quote-text">${this.escapeHtml(msg.replyTo.text)}</div>
-                        </div>
-                    `;
-                }
-
                 div.innerHTML = `
-                    <div class="message-content" id="msg-${msg.msgId}">
+                    <div class="message-content">
                         <div class="message-avatar">${initial}</div>
                         <div class="message-bubble">
-                            <button class="btn-reply-msg" data-id="${msg.msgId}" title="Reply">↩️</button>
-                            ${replyBlock}
                             <div class="message-sender">${this.escapeHtml(msg.senderName)}</div>
                             ${content}
                             <div class="message-meta">
