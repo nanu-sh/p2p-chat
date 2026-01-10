@@ -1988,3 +1988,100 @@ body {
     text-align: center;
     max-width: 85%;
 }
+
+/* ===== MINIMIZED CALL OVERLAY ===== */
+.btn-minimize-call {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 40px;
+    height: 40px;
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    border-radius: 50%;
+    color: white;
+    font-size: 18px;
+    cursor: pointer;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+}
+
+.btn-minimize-call:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+/* Minimized State */
+.call-overlay.minimized {
+    inset: auto;
+    /* Reset inset */
+    top: 70px;
+    /* Below header */
+    left: 5%;
+    width: 90%;
+    height: 72px;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    flex-direction: row;
+    padding: 0 16px;
+    justify-content: space-between;
+    background: rgba(17, 27, 33, 0.95);
+    /* Opaque background */
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+}
+
+.call-overlay.minimized .call-info {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 0;
+    flex: 1;
+}
+
+.call-overlay.minimized .call-avatar {
+    width: 40px;
+    height: 40px;
+    font-size: 20px;
+    margin-bottom: 0;
+}
+
+.call-overlay.minimized #callPeerName {
+    font-size: 16px;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 120px;
+}
+
+.call-overlay.minimized #callStatus,
+.call-overlay.minimized .call-encryption-badge {
+    display: none;
+}
+
+.call-overlay.minimized #callTimer {
+    font-size: 14px;
+    opacity: 0.8;
+    margin-left: 8px;
+    display: block !important;
+    /* Always show timer if connected */
+}
+
+.call-overlay.minimized .call-controls {
+    gap: 12px;
+}
+
+.call-overlay.minimized .btn-call-control {
+    width: 40px;
+    height: 40px;
+    font-size: 18px;
+}
+
+/* Adjust minimize button when minimized */
+.call-overlay.minimized .btn-minimize-call {
+    display: none;
+    /* Hide button */
+}

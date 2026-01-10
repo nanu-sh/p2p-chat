@@ -213,9 +213,26 @@ class P2PChat {
         document.getElementById('messageInput').oninput = () => this.sendTypingIndicator();
 
         // Voice call
+        // Voice call
         document.getElementById('btnVoiceCall').onclick = () => this.startGroupCall();
         document.getElementById('btnEndCall').onclick = () => this.endCall();
         document.getElementById('btnAcceptCall').onclick = () => this.acceptCall();
+        document.getElementById('btnMuteCall').onclick = () => this.toggleMute();
+        document.getElementById('btnSpeakerCall').onclick = () => this.toggleSpeaker();
+
+        // Minimize Call Overlay
+        document.getElementById('btnMinimizeCall').onclick = (e) => {
+            e.stopPropagation();
+            this.toggleMinimizeCall();
+        };
+        document.getElementById('callOverlay').onclick = (e) => {
+            const overlay = document.getElementById('callOverlay');
+            if (overlay.classList.contains('minimized')) {
+                if (!e.target.closest('.btn-call-control')) {
+                    this.toggleMinimizeCall();
+                }
+            }
+        };
 
         // Show peers drawer
         document.getElementById('btnShowPeers').onclick = () => this.showPeersDrawer();
@@ -972,7 +989,19 @@ class P2PChat {
         }
     }
 
+    toggleMinimizeCall() {
+        const overlay = document.getElementById('callOverlay');
+        const btn = document.getElementById('btnMinimizeCall');
+        overlay.classList.toggle('minimized');
+        btn.textContent = overlay.classList.contains('minimized') ? '🔼' : '🔽';
+    }
+
     async startGroupCall() {
+        if (this.callState) {
+            this.showToast('You are already in a call');
+            return;
+        }
+
         if (!this.activeRoomId) return;
         const roomData = this.rooms.get(this.activeRoomId);
         if (!roomData || roomData.peers.size === 0) {
@@ -1087,6 +1116,8 @@ class P2PChat {
         // Stop UI
         document.getElementById('callOverlay').classList.remove('active');
         document.getElementById('callOverlay').classList.remove('incoming');
+        document.getElementById('callOverlay').classList.remove('minimized');
+        document.getElementById('btnMinimizeCall').textContent = '🔽';
         clearInterval(this.callTimerInterval);
 
         // Send bye to all
