@@ -17,16 +17,34 @@ class P2PChat {
     }
 
     init() {
-        // Create peer with random ID
-        this.peer = new Peer();
+        // Create peer with TURN servers for cross-network connectivity
+        this.peer = new Peer(null, {
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+                    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }
+                ]
+            }
+        });
 
         this.peer.on('open', (id) => {
             document.getElementById('myPeerId').textContent = id;
             document.getElementById('connectionStatus').textContent = '🟢 Connected to network';
             document.getElementById('connectionStatus').classList.add('connected');
-
-            // Save to localStorage for persistence
             localStorage.setItem('myPeerId', id);
+
+            // Update share URL with peer ID
+            const shareUrl = `${window.location.origin}${window.location.pathname}#${id}`;
+            document.getElementById('shareLink').href = shareUrl;
+            document.getElementById('shareLink').textContent = 'Share Link';
+
+            // Check if someone shared their ID in the URL
+            this.checkUrlInvite();
+
+            // Start heartbeat for mobile keep-alive
+            this.startHeartbeat();
         });
 
         this.peer.on('connection', (conn) => {
@@ -100,8 +118,11 @@ class P2PChat {
 
         // Send message
         document.getElementById('btnSend').onclick = () => this.sendMessage();
-        document.getElementById('messageInput').onkeypress = (e) => {
-            if (e.key === 'Enter') this.sendMessage();
+        document.getElementById('messageInput').onkeydown = (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this.sendMessage();
+            }
         };
 
         // Voice call
@@ -456,6 +477,28 @@ class P2PChat {
         const name = this.getPeerName(this.currentPeer);
         document.getElementById('chatPeerName').textContent = name;
         document.getElementById('chatAvatar').textContent = name.charAt(0).toUpperCase();
+    }
+
+    // URL-based invite links
+    checkUrlInvite() {
+        const hash = window.location.hash.slice(1);
+        if (hash && hash.length > 10 && hash !== this.peer.id) {
+            document.getElementById('friendIdInput').value = hash;
+            this.showToast('Invite link detected! Click Connect to join.');
+            // Clear hash after reading
+            history.replaceState(null, '', window.location.pathname);
+        }
+    }
+
+    // Heartbeat keep-alive for mobile
+    startHeartbeat() {
+        setInterval(() => {
+            this.connections.forEach((conn) => {
+                if (conn.open) {
+                    conn.send({ type: 'ping' });
+                }
+            });
+        }, 30000); // Every 30 seconds
     }
 
     // Typing Indicators
