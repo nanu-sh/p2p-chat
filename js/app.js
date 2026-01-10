@@ -38,7 +38,6 @@ class P2PChat {
             // Update share URL with peer ID
             const shareUrl = `${window.location.origin}${window.location.pathname}#${id}`;
             document.getElementById('shareLink').href = shareUrl;
-            document.getElementById('shareLink').textContent = 'Share Link';
 
             // Check if someone shared their ID in the URL
             this.checkUrlInvite();
