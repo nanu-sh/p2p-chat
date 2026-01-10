@@ -8,6 +8,7 @@ class P2PChat {
         this.room = null;
         this.peers = new Map(); // peerId -> peer data
         this.messages = [];
+        this.messageIndex = new Map(); // msgId -> message index for status updates
         this.username = localStorage.getItem('p2p_username') || '';
         this.typingPeers = new Set();
         this.typingTimeout = null;
@@ -20,6 +21,7 @@ class P2PChat {
         this.sendTyping = null;
         this.sendUsername = null;
         this.sendMedia = null;
+        this.sendReceipt = null; // For delivered/seen receipts
 
         this.init();
     }
@@ -174,17 +176,32 @@ class P2PChat {
             const [sendUsername, getUsername] = this.room.makeAction('username');
             const [sendMedia, getMedia] = this.room.makeAction('media');
             const [sendHandshake, getHandshake] = this.room.makeAction('handshake');
+            const [sendReceipt, getReceipt] = this.room.makeAction('receipt');
 
             this.sendMessage = sendMessage;
             this.sendTyping = sendTyping;
             this.sendUsername = sendUsername;
             this.sendMedia = sendMedia;
             this.sendHandshake = sendHandshake;
+            this.sendReceipt = sendReceipt;
 
             // Handle incoming messages
             getMessage(async (data, peerId) => {
                 const decrypted = await window.e2eCrypto.decrypt(data.content, peerId);
-                this.receiveMessage(peerId, decrypted, data.timestamp);
+                this.receiveMessage(peerId, decrypted, data.timestamp, data.msgId);
+
+                // Send delivery receipt
+                sendReceipt({ msgId: data.msgId, status: 'delivered' }, peerId);
+
+                // Send seen receipt if chat is visible
+                if (!document.hidden) {
+                    sendReceipt({ msgId: data.msgId, status: 'seen' }, peerId);
+                }
+            });
+
+            // Handle receipts (delivered/seen)
+            getReceipt((data, peerId) => {
+                this.updateMessageStatus(data.msgId, data.status);
             });
 
             getTyping((data, peerId) => {
@@ -309,30 +326,52 @@ class P2PChat {
         if (!text || !this.room) return;
 
         const timestamp = Date.now();
+        const msgId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
         // Encrypt and send to all peers
         for (const [peerId] of this.peers) {
             try {
                 const encrypted = await window.e2eCrypto.encrypt(text, peerId);
-                this.sendMessage({ content: encrypted, timestamp }, peerId);
+                this.sendMessage({ content: encrypted, timestamp, msgId }, peerId);
             } catch (e) {
                 console.error('Failed to encrypt for', peerId, e);
             }
         }
 
-        this.addMessage(null, text, timestamp, true);
+        this.addMessage(null, text, timestamp, true, msgId);
         input.value = '';
     }
 
-    receiveMessage(peerId, text, timestamp) {
-        this.addMessage(peerId, text, timestamp, false);
+    receiveMessage(peerId, text, timestamp, msgId) {
+        this.addMessage(peerId, text, timestamp, false, msgId);
         this.playNotificationSound();
     }
 
-    addMessage(peerId, text, timestamp, sent) {
+    addMessage(peerId, text, timestamp, sent, msgId = null) {
         const senderName = sent ? this.username : (this.peers.get(peerId)?.name || 'Unknown');
-        this.messages.push({ peerId, senderName, text, timestamp, sent });
+        // Status: 'sent' -> 'delivered' -> 'seen' (only for sent messages)
+        const status = sent ? 'sent' : null;
+        const msgIndex = this.messages.length;
+
+        this.messages.push({ peerId, senderName, text, timestamp, sent, msgId, status });
+
+        if (msgId && sent) {
+            this.messageIndex.set(msgId, msgIndex);
+        }
+
         this.renderMessages();
+    }
+
+    updateMessageStatus(msgId, status) {
+        const index = this.messageIndex.get(msgId);
+        if (index !== undefined && this.messages[index]) {
+            const currentStatus = this.messages[index].status;
+            // Only upgrade status: sent -> delivered -> seen
+            if (currentStatus === 'sent' || (currentStatus === 'delivered' && status === 'seen')) {
+                this.messages[index].status = status;
+                this.renderMessages();
+            }
+        }
     }
 
     addSystemMessage(text) {
@@ -369,13 +408,28 @@ class P2PChat {
                     content = `<div class="message-text">${this.escapeHtml(msg.text)}</div>`;
                 }
 
+                // Status indicator for sent messages
+                let statusIcon = '';
+                if (msg.sent && msg.status) {
+                    if (msg.status === 'seen') {
+                        statusIcon = '<span class="msg-status seen">✓✓</span>';
+                    } else if (msg.status === 'delivered') {
+                        statusIcon = '<span class="msg-status delivered">✓✓</span>';
+                    } else {
+                        statusIcon = '<span class="msg-status sent">✓</span>';
+                    }
+                }
+
                 div.innerHTML = `
                     <div class="message-content">
                         <div class="message-avatar">${initial}</div>
                         <div class="message-bubble">
                             <div class="message-sender">${this.escapeHtml(msg.senderName)}</div>
                             ${content}
-                            <div class="message-time">${time}</div>
+                            <div class="message-meta">
+                                <span class="message-time">${time}</span>
+                                ${statusIcon}
+                            </div>
                         </div>
                     </div>
                 `;

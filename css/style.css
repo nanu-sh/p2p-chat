@@ -989,3 +989,35 @@ body {
         bottom: calc(80px + env(safe-area-inset-bottom));
     }
 }
+
+/* Message Status Indicators (WhatsApp-style) */
+.message-meta {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    margin-top: 4px;
+}
+
+.message-time {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.msg-status {
+    font-size: 14px;
+    font-weight: bold;
+    margin-left: 2px;
+}
+
+.msg-status.sent {
+    color: var(--text-muted);
+}
+
+.msg-status.delivered {
+    color: var(--text-muted);
+}
+
+.msg-status.seen {
+    color: #53bdeb;
+}
