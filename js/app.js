@@ -197,12 +197,20 @@ class P2PChat {
         conn.on('error', (err) => console.error('Connection error:', err));
     }
 
-    acceptConnection(conn) {
+    async acceptConnection(conn) {
         this.connections.set(conn.peer, conn);
         this.approvedPeers.add(conn.peer);
         localStorage.setItem('p2p_approved', JSON.stringify([...this.approvedPeers]));
+
+        // Send our username
         conn.send({ type: 'username', name: this.username });
         conn.send({ type: 'connect-accepted' });
+
+        // Exchange public keys for E2E encryption
+        const myPublicKey = await window.e2eCrypto.getPublicKeyString();
+        conn.send({ type: 'public-key', key: myPublicKey });
+        console.log('Sent public key to', conn.peer.slice(0, 8));
+
         this.setupConnectionHandlers(conn);
         this.updatePeersList();
         this.selectPeer(conn.peer);
@@ -218,10 +226,13 @@ class P2PChat {
             } else if (data.type === 'media') {
                 this.receiveMedia(conn.peer, data);
                 this.playNotificationSound();
+            } else if (data.type === 'public-key') {
+                // Import the peer's public key for E2E encryption
+                await window.e2eCrypto.importPeerPublicKey(conn.peer, data.key);
+                this.showToast('🔐 Secure channel established!');
             } else if (data.type === 'voice-key') {
-                // Decrypt the voice key using E2E crypto
-                const decrypted = await window.e2eCrypto.decrypt(data.key, conn.peer);
-                const raw = new Uint8Array(JSON.parse(decrypted));
+                // Voice key is sent as raw array (not encrypted, but only after connection)
+                const raw = new Uint8Array(data.key);
                 await window.voiceCrypto.importKey(raw);
                 console.log('Voice key imported from', conn.peer);
             } else if (data.type === 'username') {
@@ -381,15 +392,11 @@ class P2PChat {
         console.log('Calling peer', this.currentPeer);
 
         try {
-            // Generate and share voice encryption key (encrypted)
+            // Generate and share voice encryption key
             const rawKey = await window.voiceCrypto.generateKey();
             const conn = this.connections.get(this.currentPeer);
             if (conn) {
-                const encryptedKey = await window.e2eCrypto.encrypt(
-                    JSON.stringify(Array.from(new Uint8Array(rawKey))),
-                    this.currentPeer
-                );
-                conn.send({ type: 'voice-key', key: encryptedKey });
+                conn.send({ type: 'voice-key', key: Array.from(new Uint8Array(rawKey)) });
             }
 
             this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
