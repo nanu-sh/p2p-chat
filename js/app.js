@@ -1,4 +1,4 @@
-// P2P Chat App - Room-based with Multiple Peers
+// P2P Chat App - Room-based with Peer Discovery
 class P2PChat {
     constructor() {
         this.peer = null;
@@ -7,6 +7,7 @@ class P2PChat {
         this.peerFingerprints = new Map(); // peerId -> fingerprint
         this.verifiedPeers = new Set(JSON.parse(localStorage.getItem('verified_peers') || '[]'));
         this.currentRoom = null;
+        this.mySlot = null; // Our slot number in the room (0-9)
         this.messages = [];
         this.username = localStorage.getItem('p2p_username') || '';
         this.typingPeers = new Set();
@@ -14,6 +15,7 @@ class P2PChat {
         this.localStream = null;
         this.calls = new Map();
         this.pendingCall = null;
+        this.discoveryInterval = null;
 
         this.init();
     }
@@ -25,8 +27,35 @@ class P2PChat {
         // Generate our fingerprint
         this.myFingerprint = await this.generateFingerprint();
 
-        // Create peer
-        this.peer = new Peer(null, {
+        this.setupUI();
+        this.promptForUsername();
+
+        // Show fingerprint
+        document.getElementById('myFingerprint').textContent = this.myFingerprint;
+        document.getElementById('securitySection').style.display = 'block';
+
+        // Check for room in URL - will create peer when joining room
+        this.checkUrlRoom();
+    }
+
+    // Create peer with room-based ID for discovery
+    async createPeerForRoom(roomId) {
+        return new Promise((resolve, reject) => {
+            // Try slots 0-9 for this room
+            this.tryNextSlot(roomId, 0, resolve, reject);
+        });
+    }
+
+    tryNextSlot(roomId, slot, resolve, reject) {
+        if (slot >= 10) {
+            reject(new Error('Room is full (max 10 peers)'));
+            return;
+        }
+
+        const peerId = `${roomId}_${slot}`;
+        console.log(`Trying slot ${slot}: ${peerId}`);
+
+        const peer = new Peer(peerId, {
             config: {
                 iceServers: [
                     { urls: 'stun:stun.l.google.com:19302' },
@@ -37,40 +66,68 @@ class P2PChat {
             }
         });
 
-        this.peer.on('open', (id) => {
+        peer.on('open', (id) => {
+            console.log('Got slot:', slot);
+            this.peer = peer;
+            this.mySlot = slot;
+
             document.getElementById('connectionStatus').textContent = '🟢 Connected';
             document.getElementById('connectionStatus').classList.add('connected');
 
-            // Show fingerprint
-            document.getElementById('myFingerprint').textContent = this.myFingerprint;
-            document.getElementById('securitySection').style.display = 'block';
+            // Set up event handlers
+            peer.on('connection', (conn) => this.handleIncomingConnection(conn));
+            peer.on('call', (call) => this.handleIncomingCall(call));
+            peer.on('error', (err) => {
+                if (err.type !== 'unavailable-id') {
+                    console.error('Peer error:', err);
+                }
+            });
 
-            // Check for room in URL
-            this.checkUrlRoom();
+            resolve(peer);
         });
 
-        this.peer.on('connection', (conn) => {
-            this.handleIncomingConnection(conn);
+        peer.on('error', (err) => {
+            if (err.type === 'unavailable-id') {
+                // This slot is taken, try next
+                peer.destroy();
+                this.tryNextSlot(roomId, slot + 1, resolve, reject);
+            } else {
+                console.error('Peer error:', err);
+                peer.destroy();
+                this.tryNextSlot(roomId, slot + 1, resolve, reject);
+            }
         });
+    }
 
-        this.peer.on('call', (call) => {
-            this.handleIncomingCall(call);
-        });
+    // Discover and connect to other peers in the room
+    discoverPeers() {
+        if (!this.currentRoom || !this.peer) return;
 
-        this.peer.on('error', (err) => {
-            console.error('Peer error:', err);
-            document.getElementById('connectionStatus').textContent = '🔴 ' + err.type;
-        });
+        for (let slot = 0; slot < 10; slot++) {
+            if (slot === this.mySlot) continue; // Skip self
 
-        this.setupUI();
-        this.promptForUsername();
+            const peerId = `${this.currentRoom}_${slot}`;
+            if (this.connections.has(peerId)) continue; // Already connected
+
+            // Try to connect
+            console.log('Attempting to connect to:', peerId);
+            const conn = this.peer.connect(peerId, { reliable: true });
+
+            conn.on('open', () => {
+                console.log('Connected to peer at slot:', slot);
+                this.setupConnection(conn);
+            });
+
+            conn.on('error', () => {
+                // Peer doesn't exist at this slot, ignore
+            });
+        }
     }
 
     async generateFingerprint() {
         const publicKey = await window.e2eCrypto.getPublicKeyString();
         const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(publicKey));
         const bytes = new Uint8Array(hash);
-        // Format as readable fingerprint (like Signal)
         let fp = '';
         for (let i = 0; i < 8; i++) {
             if (i > 0) fp += ' ';
@@ -99,7 +156,6 @@ class P2PChat {
             this.username = name.trim().slice(0, 20);
             localStorage.setItem('p2p_username', this.username);
             document.getElementById('myUsername').textContent = this.username;
-            // Notify all peers
             this.broadcast({ type: 'username', name: this.username });
             this.showToast('Username updated!');
         }
@@ -153,9 +209,7 @@ class P2PChat {
         document.getElementById('btnCancelVerify').onclick = () => {
             document.getElementById('verifyModal').style.display = 'none';
         };
-        document.getElementById('btnConfirmVerify').onclick = () => {
-            this.confirmVerification();
-        };
+        document.getElementById('btnConfirmVerify').onclick = () => this.confirmVerification();
 
         // Mobile audio fix
         document.body.addEventListener('click', () => {
@@ -177,15 +231,12 @@ class P2PChat {
     }
 
     generateRoomId() {
-        // Generate UUID-like room ID
-        return 'xxxxxxxx-xxxx-4xxx-yxxx'.replace(/[xy]/g, (c) => {
-            const r = Math.random() * 16 | 0;
-            const v = c === 'x' ? r : (r & 0x3 | 0x8);
-            return v.toString(16);
+        return 'xxxxxxxx'.replace(/[x]/g, () => {
+            return Math.floor(Math.random() * 16).toString(16);
         });
     }
 
-    joinRoomById(roomId) {
+    async joinRoomById(roomId) {
         if (this.currentRoom === roomId) {
             this.showToast('Already in this room');
             return;
@@ -196,42 +247,68 @@ class P2PChat {
             this.leaveRoom(false);
         }
 
-        this.currentRoom = roomId;
-        this.messages = [];
+        this.showToast('Joining room...');
 
-        // Update URL
-        history.replaceState(null, '', `#${roomId}`);
+        try {
+            // Create peer with room-based ID
+            await this.createPeerForRoom(roomId);
 
-        // Update UI
-        document.getElementById('roomSection').style.display = 'block';
-        document.getElementById('currentRoomName').textContent = roomId.slice(0, 16) + '...';
-        document.getElementById('emptyState').style.display = 'none';
-        document.getElementById('chatView').style.display = 'flex';
-        document.getElementById('chatRoomName').textContent = 'Room: ' + roomId.slice(0, 12);
-        document.getElementById('roomInput').value = '';
+            this.currentRoom = roomId;
+            this.messages = [];
 
-        // On mobile, collapse sidebar
-        if (window.innerWidth <= 768) {
-            document.getElementById('sidebar').classList.add('collapsed');
+            // Update URL
+            history.replaceState(null, '', `#${roomId}`);
+
+            // Update UI
+            document.getElementById('roomSection').style.display = 'block';
+            document.getElementById('currentRoomName').textContent = roomId;
+            document.getElementById('emptyState').style.display = 'none';
+            document.getElementById('chatView').style.display = 'flex';
+            document.getElementById('chatRoomName').textContent = 'Room: ' + roomId.slice(0, 12);
+            document.getElementById('roomInput').value = '';
+
+            // On mobile, collapse sidebar
+            if (window.innerWidth <= 768) {
+                document.getElementById('sidebar').classList.add('collapsed');
+            }
+
+            // Start peer discovery
+            this.discoverPeers();
+
+            // Keep discovering periodically for latecomers
+            this.discoveryInterval = setInterval(() => this.discoverPeers(), 3000);
+
+            this.showToast('Joined! Share the link to invite others.');
+            this.updatePeersList();
+            this.renderMessages();
+
+        } catch (err) {
+            console.error('Failed to join room:', err);
+            this.showToast('Failed to join: ' + err.message);
         }
-
-        this.showToast('Joined room! Share the link to invite others.');
-        this.updatePeersList();
-        this.renderMessages();
-
-        // The room ID acts as a signaling channel
-        // Other peers who know the room ID can connect to us
-        // We need a discovery mechanism - for now, copy link to share
     }
 
     leaveRoom(showEmpty = true) {
+        // Stop discovery
+        if (this.discoveryInterval) {
+            clearInterval(this.discoveryInterval);
+            this.discoveryInterval = null;
+        }
+
         // Disconnect all peers
         this.connections.forEach((conn) => conn.close());
         this.connections.clear();
         this.peerNames.clear();
         this.peerFingerprints.clear();
 
+        // Destroy peer
+        if (this.peer) {
+            this.peer.destroy();
+            this.peer = null;
+        }
+
         this.currentRoom = null;
+        this.mySlot = null;
         this.messages = [];
 
         // Update URL
@@ -239,6 +316,9 @@ class P2PChat {
 
         // Update UI
         document.getElementById('roomSection').style.display = 'none';
+        document.getElementById('connectionStatus').textContent = '⏳ Not connected';
+        document.getElementById('connectionStatus').classList.remove('connected');
+
         if (showEmpty) {
             document.getElementById('emptyState').style.display = 'flex';
             document.getElementById('chatView').style.display = 'none';
@@ -256,29 +336,25 @@ class P2PChat {
 
     checkUrlRoom() {
         const hash = window.location.hash.slice(1);
-        if (hash && hash.length > 8) {
-            document.getElementById('roomInput').value = hash;
-            this.showToast('Room link detected! Click Join to enter.');
+        if (hash && hash.length >= 8) {
+            // Auto-join if room in URL
+            this.joinRoomById(hash);
         }
     }
 
     // Connection Handling
-    connectToPeer(peerId) {
-        if (this.connections.has(peerId) || peerId === this.peer.id) return;
-
-        console.log('Connecting to peer:', peerId.slice(0, 8));
-        const conn = this.peer.connect(peerId, { reliable: true });
-        this.setupConnection(conn);
-    }
-
     handleIncomingConnection(conn) {
-        console.log('Incoming connection from:', conn.peer.slice(0, 8));
+        console.log('Incoming connection from:', conn.peer);
         this.setupConnection(conn);
     }
 
     async setupConnection(conn) {
+        if (this.connections.has(conn.peer)) return; // Already connected
+
+        this.connections.set(conn.peer, conn);
+
         conn.on('open', async () => {
-            this.connections.set(conn.peer, conn);
+            console.log('Connection opened with:', conn.peer);
 
             // Exchange info
             const myPublicKey = await window.e2eCrypto.getPublicKeyString();
@@ -286,8 +362,7 @@ class P2PChat {
                 type: 'handshake',
                 name: this.username,
                 publicKey: myPublicKey,
-                fingerprint: this.myFingerprint,
-                room: this.currentRoom
+                fingerprint: this.myFingerprint
             });
 
             this.updatePeersList();
@@ -296,17 +371,17 @@ class P2PChat {
         conn.on('data', (data) => this.handleData(conn.peer, data));
 
         conn.on('close', () => {
+            const name = this.peerNames.get(conn.peer) || 'Someone';
             this.connections.delete(conn.peer);
             this.peerNames.delete(conn.peer);
             this.peerFingerprints.delete(conn.peer);
             this.updatePeersList();
-
-            const name = this.peerNames.get(conn.peer) || 'A peer';
             this.addSystemMessage(`${name} left the room`);
         });
 
         conn.on('error', (err) => {
             console.error('Connection error:', err);
+            this.connections.delete(conn.peer);
         });
     }
 
@@ -316,23 +391,10 @@ class P2PChat {
                 this.peerNames.set(peerId, data.name);
                 this.peerFingerprints.set(peerId, data.fingerprint);
 
-                // Import their public key
                 await window.e2eCrypto.importPeerPublicKey(peerId, data.publicKey);
 
                 this.updatePeersList();
                 this.addSystemMessage(`${data.name} joined the room`);
-
-                // Share our peer list with them (for mesh networking)
-                this.sharePeerList(peerId);
-                break;
-
-            case 'peer-list':
-                // Connect to other peers in the room
-                data.peers.forEach(p => {
-                    if (p !== this.peer.id && !this.connections.has(p)) {
-                        this.connectToPeer(p);
-                    }
-                });
                 break;
 
             case 'message':
@@ -356,14 +418,6 @@ class P2PChat {
             case 'voice-key':
                 await window.voiceCrypto.importKey(new Uint8Array(data.key));
                 break;
-        }
-    }
-
-    sharePeerList(toPeerId) {
-        const conn = this.connections.get(toPeerId);
-        if (conn) {
-            const peers = Array.from(this.connections.keys()).filter(p => p !== toPeerId);
-            conn.send({ type: 'peer-list', peers });
         }
     }
 
@@ -396,7 +450,6 @@ class P2PChat {
             }
         }
 
-        // Add to our own messages
         this.addMessage(null, text, timestamp, true);
         input.value = '';
     }
@@ -409,23 +462,12 @@ class P2PChat {
     addMessage(peerId, text, timestamp, sent) {
         const senderName = sent ? this.username : (this.peerNames.get(peerId) || 'Unknown');
 
-        this.messages.push({
-            peerId,
-            senderName,
-            text,
-            timestamp,
-            sent
-        });
-
+        this.messages.push({ peerId, senderName, text, timestamp, sent });
         this.renderMessages();
     }
 
     addSystemMessage(text) {
-        this.messages.push({
-            system: true,
-            text,
-            timestamp: Date.now()
-        });
+        this.messages.push({ system: true, text, timestamp: Date.now() });
         this.renderMessages();
     }
 
@@ -479,7 +521,6 @@ class P2PChat {
     // Typing Indicator
     sendTypingIndicator() {
         if (!this.currentRoom) return;
-
         this.broadcast({ type: 'typing', isTyping: true });
 
         clearTimeout(this.typingTimeout);
@@ -502,7 +543,7 @@ class P2PChat {
             const names = Array.from(this.typingPeers);
             const text = names.length === 1
                 ? `${names[0]} is typing...`
-                : `${names.slice(0, 2).join(', ')}${names.length > 2 ? ' and others' : ''} are typing...`;
+                : `${names.slice(0, 2).join(', ')} are typing...`;
             document.getElementById('typingText').textContent = text;
             bar.style.display = 'block';
         } else {
@@ -538,13 +579,13 @@ class P2PChat {
         document.getElementById('peerCountBadge').textContent = `${count} peer${count !== 1 ? 's' : ''}`;
 
         if (count === 0) {
-            list.innerHTML = '<p class="no-peers">No peers connected yet</p>';
+            list.innerHTML = '<p class="no-peers">Waiting for peers to join...</p>';
             return;
         }
 
         list.innerHTML = '';
         this.connections.forEach((conn, peerId) => {
-            const name = this.peerNames.get(peerId) || peerId.slice(0, 8);
+            const name = this.peerNames.get(peerId) || 'Connecting...';
             const isVerified = this.verifiedPeers.has(peerId);
             const initial = name.charAt(0).toUpperCase();
 
@@ -573,7 +614,7 @@ class P2PChat {
         });
     }
 
-    // Voice Calls (Group Call)
+    // Voice Calls
     async startGroupCall() {
         if (this.connections.size === 0) {
             this.showToast('No peers to call');
@@ -581,13 +622,11 @@ class P2PChat {
         }
 
         try {
-            // Generate shared voice key
             const rawKey = await window.voiceCrypto.generateKey();
             this.broadcast({ type: 'voice-key', key: Array.from(new Uint8Array(rawKey)) });
 
             this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-            // Call each peer
             this.connections.forEach((conn, peerId) => {
                 const call = this.peer.call(peerId, this.localStream);
                 this.handleOutgoingCall(call);
@@ -607,9 +646,7 @@ class P2PChat {
         this.calls.set(call.peer, call);
 
         call.on('stream', (remoteStream) => {
-            // Mix all remote audio
-            const audio = document.getElementById('remoteAudio');
-            audio.srcObject = remoteStream;
+            document.getElementById('remoteAudio').srcObject = remoteStream;
             document.getElementById('callStatus').textContent = 'Connected';
         });
 
