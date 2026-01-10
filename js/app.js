@@ -18,6 +18,8 @@ class P2PChat {
         this.verifiedPeers = new Set(JSON.parse(localStorage.getItem('verified_peers') || '[]'));
         this.roomNames = JSON.parse(localStorage.getItem('p2p_room_names') || '{}'); // roomId -> custom name
         this.activeTab = 'chats';
+        this.joiningRooms = new Set();
+        this.roomBroadcasts = new Map(); // roomId -> BroadcastChannel
 
         // Voice call state
         this.callState = null; // null, 'calling', 'incoming', 'connected'
@@ -358,6 +360,30 @@ class P2PChat {
             return;
         }
 
+        // Anti-duplication
+        if (this.joiningRooms.has(roomId)) return;
+        this.joiningRooms.add(roomId);
+
+        // Check if room is open in another tab
+        const bc = new BroadcastChannel('p2p_room_' + roomId);
+        const isDupe = await new Promise(resolve => {
+            const timer = setTimeout(() => resolve(false), 200);
+            bc.onmessage = (e) => {
+                if (e.data === 'presence') {
+                    clearTimeout(timer);
+                    resolve(true);
+                }
+            };
+            bc.postMessage('ping');
+        });
+
+        if (isDupe) {
+            this.showToast('Already joined in another tab');
+            this.joiningRooms.delete(roomId);
+            bc.close();
+            return;
+        }
+
         this.showToast('Connecting to room...');
         document.getElementById('connectionStatus').textContent = '🟡 Connecting...';
         document.getElementById('connectionStatus').classList.remove('connected');
@@ -492,6 +518,12 @@ class P2PChat {
             // Store room data
             this.rooms.set(roomId, roomData);
 
+            // Setup Broadcast Presence (Responder)
+            bc.onmessage = (e) => {
+                if (e.data === 'ping') bc.postMessage('presence');
+            };
+            this.roomBroadcasts.set(roomId, bc);
+
             // Switch to this room
             this.switchToRoom(roomId);
 
@@ -499,12 +531,15 @@ class P2PChat {
             history.replaceState(null, '', `#${roomId}`);
 
             this.showToast('Connected! Share the link to invite others.');
+            this.joiningRooms.delete(roomId);
 
         } catch (err) {
             console.error('Failed to join room:', err);
-            this.showToast('Failed to connect: ' + err.message);
-            document.getElementById('connectionStatus').textContent = '🔴 Error';
+            this.showToast('Failed to join room');
+            this.joiningRooms.delete(roomId);
+            bc.close();
         }
+
     }
 
     switchToRoom(roomId) {

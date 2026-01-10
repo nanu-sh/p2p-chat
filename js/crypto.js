@@ -7,8 +7,30 @@ class E2ECrypto {
         this.peerPublicKeys = new Map(); // peerId -> CryptoKey
     }
 
-    // Generate our keypair on init
+    // Generate our keypair on init or load from storage
     async init() {
+        const savedKeys = localStorage.getItem('my_identity_keys');
+        if (savedKeys) {
+            try {
+                const { privateKeyJwk, publicKeyJwk } = JSON.parse(savedKeys);
+                const privateKey = await crypto.subtle.importKey(
+                    'jwk', privateKeyJwk,
+                    { name: 'RSA-OAEP', hash: 'SHA-256' },
+                    true, ['decrypt']
+                );
+                const publicKey = await crypto.subtle.importKey(
+                    'jwk', publicKeyJwk,
+                    { name: 'RSA-OAEP', hash: 'SHA-256' },
+                    true, ['encrypt']
+                );
+                this.myKeyPair = { privateKey, publicKey };
+                console.log('✓ RSA keypair restored');
+                return this;
+            } catch (e) {
+                console.error('Failed to restore keys:', e);
+            }
+        }
+
         this.myKeyPair = await crypto.subtle.generateKey(
             {
                 name: 'RSA-OAEP',
@@ -19,7 +41,13 @@ class E2ECrypto {
             true,
             ['encrypt', 'decrypt']
         );
-        console.log('✓ RSA keypair generated');
+
+        // Save keys
+        const privateKeyJwk = await crypto.subtle.exportKey('jwk', this.myKeyPair.privateKey);
+        const publicKeyJwk = await crypto.subtle.exportKey('jwk', this.myKeyPair.publicKey);
+        localStorage.setItem('my_identity_keys', JSON.stringify({ privateKeyJwk, publicKeyJwk }));
+
+        console.log('✓ RSA keypair generated and saved');
         return this;
     }
 
