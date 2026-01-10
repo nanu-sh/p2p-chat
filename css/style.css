@@ -2085,3 +2085,126 @@ body {
     display: none;
     /* Hide button */
 }
+
+/* ===== REPLY FEATURE ===== */
+.reply-preview {
+    background: rgba(32, 44, 51, 0.95);
+    padding: 8px 12px;
+    border-radius: 8px 8px 0 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    margin-bottom: -10px;
+    position: relative;
+    z-index: 5;
+}
+
+.message-input-container:has(.reply-preview[style*="display: block"]) .message-input-wrapper {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+
+.reply-info {
+    flex: 1;
+    border-left: 4px solid var(--accent);
+    padding-left: 10px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+    padding: 6px 10px;
+}
+
+.reply-sender {
+    display: block;
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: bold;
+    margin-bottom: 2px;
+}
+
+.reply-text {
+    color: var(--text-secondary);
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin: 0;
+}
+
+.btn-close-reply {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px 12px;
+}
+
+/* Rendered Quote inside Message Bubble */
+.reply-quote {
+    background: rgba(0, 0, 0, 0.2);
+    border-left: 4px solid var(--accent);
+    padding: 4px 8px;
+    border-radius: 4px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    background-color: rgba(0, 0, 0, 0.2);
+    font-size: 0.9em;
+}
+
+.reply-quote-sender {
+    font-size: 11px;
+    font-weight: bold;
+    color: var(--accent);
+    display: block;
+    margin-bottom: 2px;
+}
+
+.reply-quote-text {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.9);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Hover Reply Button */
+.btn-reply-msg {
+    position: absolute;
+    top: -10px;
+    right: -10px;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--surface-2);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    cursor: pointer;
+    opacity: 0;
+    transform: scale(0.8) rotate(-180deg);
+    transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    z-index: 2;
+}
+
+.message-bubble:hover .btn-reply-msg {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+    top: -12px;
+}
+
+/* For self messages */
+.message-bubble.self .btn-reply-msg {
+    right: auto;
+    left: -10px;
+    transform: scale(0.8) rotate(180deg);
+}
+
+.message-bubble.self:hover .btn-reply-msg {
+    transform: scale(1) rotate(0deg);
+    left: -12px;
+}
