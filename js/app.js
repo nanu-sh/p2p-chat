@@ -1,8 +1,8 @@
 // P2P Chat App - Using Trystero for reliable P2P
-// Switched to Nostr relay signaling for better reliability
+// Using BitTorrent DHT for signaling (original working version)
 // Multi-room support enabled
 
-import { joinRoom } from 'https://esm.sh/trystero/nostr';
+import { joinRoom } from 'https://esm.sh/trystero/torrent';
 
 class P2PChat {
     constructor() {
@@ -605,24 +605,10 @@ class P2PChat {
         document.getElementById('connectionStatus').classList.remove('connected');
 
         try {
-            // Using Trystero with Nostr relay signaling
+            // Using Trystero with BitTorrent trackers
+            // Simple config that was working before
             const config = {
-                appId: 'p2p-chat-nanu-' + roomId,
-                // Nostr relays for signaling
-                relayUrls: [
-                    'wss://relay.damus.io',
-                    'wss://nos.lol',
-                    'wss://relay.nostr.band',
-                    'wss://nostr.wine'
-                ],
-                // ICE servers for NAT traversal
-                rtcConfig: {
-                    iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:stun1.l.google.com:19302' },
-                        { urls: 'stun:stun2.l.google.com:19302' }
-                    ]
-                }
+                appId: 'p2p-chat-app-v1'
             };
 
             const room = joinRoom(config, roomId);
