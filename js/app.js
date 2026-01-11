@@ -605,9 +605,20 @@ class P2PChat {
         document.getElementById('connectionStatus').classList.remove('connected');
 
         try {
-            // Using Trystero with BitTorrent trackers (like Chitchatter)
+            // Using Trystero with BitTorrent trackers
+            // Adding multiple trackers for reliability
             const config = {
-                appId: 'p2p-chat-' + roomId // Each room is a unique app
+                appId: 'p2p-chat-nanu-' + roomId,
+                // Use multiple reliable trackers
+                rtcConfig: {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun2.l.google.com:19302' },
+                        { urls: 'stun:stun3.l.google.com:19302' },
+                        { urls: 'stun:stun4.l.google.com:19302' }
+                    ]
+                }
             };
 
             const room = joinRoom(config, roomId);
