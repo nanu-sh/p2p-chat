@@ -749,6 +749,10 @@ body {
     background: rgba(241, 92, 109, 0.1);
 }
 
+a.action-btn {
+    text-decoration: none;
+}
+
 .action-icon {
     font-size: 20px;
 }
