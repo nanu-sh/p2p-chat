@@ -4,11 +4,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="theme-color" content="#1f2c33">
+    <meta name="theme-color" content="#00a884">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="P2P Chat">
     <title>P2P Chat - Private & Encrypted</title>
     <meta name="description" content="Secure peer-to-peer chat. No servers, no tracking, end-to-end encrypted.">
+
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
+
     <link rel="stylesheet" href="css/style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -92,6 +98,35 @@
                     </div>
                 </div>
 
+                <!-- Settings Section -->
+                <div class="settings-section">
+                    <div class="section-header">
+                        <span>⚙️ Settings</span>
+                    </div>
+                    <div class="settings-card">
+                        <div class="setting-item">
+                            <div class="setting-info">
+                                <span class="setting-icon">🔔</span>
+                                <span>Notification Sounds</span>
+                            </div>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="toggleSound" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                        <div class="setting-item">
+                            <div class="setting-info">
+                                <span class="setting-icon">🌙</span>
+                                <span>Dark Mode</span>
+                            </div>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="toggleTheme" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Quick Actions -->
                 <div class="quick-actions">
                     <div class="section-header">
@@ -99,7 +134,7 @@
                     </div>
                     <button class="action-btn" id="btnCreateRoomSidebar">
                         <span class="action-icon">➕</span>
-                        <span>Create New Room</span>
+                        <span>Start New Chat</span>
                     </button>
                     <button class="action-btn danger" id="btnClearData">
                         <span class="action-icon">🗑️</span>
@@ -114,10 +149,10 @@
             <div class="empty-state" id="emptyState">
                 <button class="btn-mobile-menu" id="btnMobileMenuEmpty" title="Menu">☰</button>
                 <div class="empty-icon">💬</div>
-                <h3>P2P Encrypted Group Chat</h3>
-                <p>Join a room to start chatting with your group</p>
+                <h3>P2P Direct Chat</h3>
+                <p>Start a private 1-on-1 encrypted conversation</p>
                 <p class="hint">Messages go directly between browsers — no server!</p>
-                <button class="btn-create-room" id="btnCreateRoom">Create New Room</button>
+                <button class="btn-create-room" id="btnCreateRoom">Start New Chat</button>
             </div>
 
             <div id="chatView" style="display:none;">
@@ -222,8 +257,35 @@
 
     <audio id="remoteAudio" autoplay></audio>
 
+    <!-- QR Code Modal -->
+    <div class="modal-overlay" id="qrModal" style="display:none;">
+        <div class="modal qr-modal">
+            <h3>📱 Share Room</h3>
+            <div id="qrCodeContainer" class="qr-container"></div>
+            <p class="qr-room-code" id="qrRoomCode">Room Code</p>
+            <p class="hint">Scan this QR code to join the chat</p>
+            <div class="modal-buttons">
+                <button class="btn-cancel" id="btnCloseQR">Close</button>
+                <button class="btn-confirm" id="btnCopyLinkQR">📋 Copy Link</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- QRCode.js library -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
     <script src="js/crypto.js"></script>
     <script type="module" src="js/app.js"></script>
+
+    <!-- Service Worker Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(reg => console.log('SW registered:', reg.scope))
+                    .catch(err => console.log('SW registration failed:', err));
+            });
+        }
+    </script>
 </body>
 
 </html>

@@ -19,6 +19,13 @@ class P2PChat {
         this.roomNames = JSON.parse(localStorage.getItem('p2p_room_names') || '{}'); // roomId -> custom name
         this.activeTab = 'chats';
 
+        // Settings
+        this.soundEnabled = localStorage.getItem('p2p_sound_enabled') !== 'false';
+        this.darkMode = localStorage.getItem('p2p_dark_mode') !== 'false';
+
+        // Last seen tracking
+        this.lastSeenTimes = JSON.parse(localStorage.getItem('p2p_last_seen') || '{}'); // peerId -> timestamp
+
         // Voice call state
         this.callState = null; // null, 'calling', 'incoming', 'connected'
         this.callPeerId = null;
@@ -45,6 +52,15 @@ class P2PChat {
 
         // Generate fingerprint
         this.myFingerprint = await this.generateFingerprint();
+
+        // Security Check
+        if (!window.isSecureContext) {
+            this.showToast('⚠️ Not Secure! P2P requires HTTPS.');
+            console.error('WebCrypto and P2P require a Secure Context (HTTPS or localhost). Connection will fail.');
+            // Visual warning in UI
+            document.getElementById('connectionStatus').textContent = '⚠️ Insecure';
+            document.getElementById('connectionStatus').style.color = '#ff4444';
+        }
 
         this.setupUI();
         this.promptForUsername();
@@ -192,7 +208,7 @@ class P2PChat {
         document.getElementById('btnCreateRoom').onclick = () => this.createRoom();
         document.getElementById('btnCreateRoomSidebar').onclick = () => this.createRoom();
         document.getElementById('btnLeaveRoom').onclick = () => this.leaveCurrentRoom();
-        document.getElementById('btnCopyRoomLink').onclick = () => this.copyRoomLink();
+        document.getElementById('btnCopyRoomLink').onclick = () => this.showQRCode();
         document.getElementById('btnEditRoomNameHeader').onclick = () => this.editRoomName();
 
         document.getElementById('roomInput').onkeypress = (e) => {
@@ -251,6 +267,37 @@ class P2PChat {
             document.getElementById('verifyModal').style.display = 'none';
         };
         document.getElementById('btnConfirmVerify').onclick = () => this.confirmVerification();
+
+        // Settings toggles
+        const soundToggle = document.getElementById('toggleSound');
+        const themeToggle = document.getElementById('toggleTheme');
+
+        if (soundToggle) {
+            soundToggle.checked = this.soundEnabled;
+            soundToggle.onchange = () => this.toggleSound();
+        }
+
+        if (themeToggle) {
+            themeToggle.checked = this.darkMode;
+            themeToggle.onchange = () => this.toggleTheme();
+        }
+
+        // Apply initial theme
+        this.applyTheme();
+
+        // QR Code modal
+        document.getElementById('btnCloseQR')?.addEventListener('click', () => {
+            document.getElementById('qrModal').style.display = 'none';
+        });
+        document.getElementById('btnCopyLinkQR')?.addEventListener('click', () => {
+            this.copyRoomLink();
+            document.getElementById('qrModal').style.display = 'none';
+        });
+        document.getElementById('qrModal')?.addEventListener('click', (e) => {
+            if (e.target.id === 'qrModal') {
+                document.getElementById('qrModal').style.display = 'none';
+            }
+        });
     }
 
     showPeersDrawer() {
@@ -317,7 +364,7 @@ class P2PChat {
     }
 
     clearAllData() {
-        if (confirm('This will clear all saved data including username and verified peers. Continue?')) {
+        if (confirm('⚠️ This will permanently delete ALL your data including:\n\n• Username\n• Verified peers\n• Room names\n• Settings\n• Encryption keys\n\nThis action cannot be undone. Continue?')) {
             // Leave all rooms
             this.rooms.forEach((roomData, roomId) => {
                 if (roomData.room) {
@@ -326,9 +373,159 @@ class P2PChat {
             });
             this.rooms.clear();
 
+            // Clear all localStorage
             localStorage.clear();
+
+            // Clear IndexedDB for crypto keys
+            if (window.indexedDB) {
+                window.indexedDB.deleteDatabase('e2e_crypto_keys');
+            }
+
             location.reload();
         }
+    }
+
+    // Settings Methods
+    toggleSound() {
+        this.soundEnabled = !this.soundEnabled;
+        localStorage.setItem('p2p_sound_enabled', this.soundEnabled);
+        document.getElementById('toggleSound').checked = this.soundEnabled;
+        this.showToast(this.soundEnabled ? '🔔 Sounds enabled' : '🔕 Sounds muted');
+    }
+
+    toggleTheme() {
+        this.darkMode = !this.darkMode;
+        localStorage.setItem('p2p_dark_mode', this.darkMode);
+        document.getElementById('toggleTheme').checked = this.darkMode;
+        this.applyTheme();
+        this.showToast(this.darkMode ? '🌙 Dark mode' : '☀️ Light mode');
+    }
+
+    applyTheme() {
+        if (this.darkMode) {
+            document.body.classList.remove('light-theme');
+        } else {
+            document.body.classList.add('light-theme');
+        }
+    }
+
+    // QR Code Methods
+    showQRCode() {
+        if (!this.activeRoomId) return;
+
+        const modal = document.getElementById('qrModal');
+        const container = document.getElementById('qrCodeContainer');
+        const roomCodeText = document.getElementById('qrRoomCode');
+
+        if (!modal || !container) return;
+
+        // Clear previous QR code
+        container.innerHTML = '';
+
+        const url = `${window.location.origin}${window.location.pathname}#${this.activeRoomId}`;
+        roomCodeText.textContent = this.activeRoomId;
+
+        // Generate QR Code using QRCode library
+        try {
+            if (window.QRCode && typeof window.QRCode.toCanvas === 'function') {
+                // Using qrcode library from npm
+                window.QRCode.toCanvas(url, {
+                    width: 180,
+                    margin: 2,
+                    color: {
+                        dark: '#000000',
+                        light: '#ffffff'
+                    }
+                }, (error, canvas) => {
+                    if (error) {
+                        console.error('QR Code error:', error);
+                        this.showQRFallback(container, url);
+                    } else {
+                        container.appendChild(canvas);
+                    }
+                });
+            } else {
+                // Fallback - show URL text
+                this.showQRFallback(container, url);
+            }
+        } catch (e) {
+            console.error('QR Code error:', e);
+            this.showQRFallback(container, url);
+        }
+
+        modal.style.display = 'block';
+    }
+
+    showQRFallback(container, url) {
+        container.innerHTML = `
+            <div style="text-align: center; padding: 20px;">
+                <p style="font-family: monospace; font-size: 14px; word-break: break-all; color: #333; margin-bottom: 10px;">${url}</p>
+                <p style="font-size: 12px; color: #666;">Share this link to invite someone</p>
+            </div>
+        `;
+    }
+
+    copyRoomLink() {
+        if (!this.activeRoomId) return;
+        const url = `${window.location.origin}${window.location.pathname}#${this.activeRoomId}`;
+        navigator.clipboard.writeText(url).then(() => {
+            this.showToast('📋 Link copied to clipboard!');
+        }).catch(() => {
+            // Fallback for older browsers
+            prompt('Copy this link:', url);
+        });
+    }
+
+    // Update peer name in header for 1-on-1 chat
+    updateHeaderPeerInfo() {
+        if (!this.activeRoomId) return;
+
+        const roomData = this.rooms.get(this.activeRoomId);
+        if (!roomData) return;
+
+        const peerCountBadge = document.getElementById('peerCountBadgeHeader');
+        const chatRoomName = document.getElementById('chatRoomName');
+
+        if (roomData.peers.size === 1) {
+            // Get the peer's name for 1-on-1 chat
+            const [peerId, peer] = [...roomData.peers.entries()][0];
+            const peerName = peer.name || 'Unknown';
+
+            // Show peer name in header instead of room ID
+            if (chatRoomName) {
+                const customName = this.roomNames[this.activeRoomId];
+                if (!customName) {
+                    chatRoomName.textContent = peerName;
+                }
+            }
+
+            // Show online status
+            peerCountBadge.textContent = '🟢 Online';
+            peerCountBadge.classList.add('online');
+            peerCountBadge.classList.remove('offline');
+
+            // Update last seen
+            this.lastSeenTimes[peerId] = Date.now();
+            localStorage.setItem('p2p_last_seen', JSON.stringify(this.lastSeenTimes));
+        } else if (roomData.peers.size === 0) {
+            peerCountBadge.textContent = '⚪ Waiting...';
+            peerCountBadge.classList.remove('online');
+        }
+    }
+
+    // Format last seen time
+    formatLastSeen(timestamp) {
+        if (!timestamp) return 'Never';
+
+        const now = Date.now();
+        const diff = now - timestamp;
+
+        if (diff < 60000) return 'Just now';
+        if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+        if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+
+        const date = new Date(timestamp);
+        return date.toLocaleDateString();
     }
 
     // Room Management
@@ -338,9 +535,54 @@ class P2PChat {
     }
 
     joinRoom() {
-        const input = document.getElementById('roomInput').value.trim();
-        const roomId = input || this.generateRoomId();
+        let input = document.getElementById('roomInput').value.trim();
+
+        // If empty, create a new room
+        if (!input) {
+            this.createRoom();
+            return;
+        }
+
+        // Handle pasted URLs: extract the hash/room part
+        let roomId = '';
+
+        // Check if it's a full URL
+        if (input.includes('://') || input.startsWith('http')) {
+            try {
+                // Handle URLs like http://domain/#roomid or http://domain#roomid
+                if (input.includes('#')) {
+                    const hashPart = input.split('#').pop();
+                    roomId = hashPart.split('/')[0].split('?')[0]; // Remove any trailing path or query
+                } else {
+                    // URL without hash - invalid for room joining
+                    this.showToast('Invalid link - no room ID found');
+                    return;
+                }
+            } catch (e) {
+                console.error('Error parsing URL:', e);
+            }
+        } else if (input.includes('#')) {
+            // Handle partial URLs or just "#roomid"
+            roomId = input.split('#').pop();
+        } else {
+            // Assume it's a direct room code
+            roomId = input;
+        }
+
+        // Clean up the room ID - only allow alphanumeric, hyphens, underscores
+        roomId = roomId.replace(/[^a-zA-Z0-9\-_]/g, '');
+
+        // Validate the room ID
+        if (!roomId || roomId.length < 4) {
+            this.showToast('Please enter a valid room code (at least 4 characters)');
+            return;
+        }
+
+        // Join the room
         this.joinRoomById(roomId);
+
+        // Clear the input
+        document.getElementById('roomInput').value = '';
     }
 
     generateRoomId() {
@@ -395,6 +637,7 @@ class P2PChat {
             const [sendHandshake, getHandshake] = room.makeAction('handshake');
             const [sendReceipt, getReceipt] = room.makeAction('receipt');
             const [sendCallSignal, getCallSignal] = room.makeAction('callSignal');
+            const [sendRoomFull, getRoomFull] = room.makeAction('roomFull');
 
             roomData.sendMessage = sendMessage;
             roomData.sendTyping = sendTyping;
@@ -403,6 +646,17 @@ class P2PChat {
             roomData.sendHandshake = sendHandshake;
             roomData.sendReceipt = sendReceipt;
             roomData.sendCallSignal = sendCallSignal;
+            roomData.sendRoomFull = sendRoomFull;
+
+            // Handle room full notification (we got rejected)
+            getRoomFull((data, peerId) => {
+                this.showToast('⛔ Room is full - only 1-on-1 chats allowed');
+                this.addSystemMessage(roomId, '⛔ This room already has 2 participants. Disconnecting...');
+                // Leave this room since we can't join
+                setTimeout(() => {
+                    this.leaveRoom(roomId);
+                }, 2000);
+            });
 
             // Handle incoming messages
             getMessage(async (data, peerId) => {
@@ -460,9 +714,18 @@ class P2PChat {
                 this.addSystemMessage(roomId, `${data.name} joined the room`);
             });
 
-            // Handle peer join
+            // Handle peer join - enforce 1-on-1 limit
             room.onPeerJoin(async (peerId) => {
                 console.log('Peer joined:', peerId, 'in room:', roomId);
+
+                // Check if room is already full (1-on-1 limit: max 1 other peer)
+                if (roomData.peers.size >= 1) {
+                    console.log('Room full, rejecting peer:', peerId);
+                    // Tell the new peer that the room is full
+                    sendRoomFull({ reason: 'Room is full - 1-on-1 chat only' }, peerId);
+                    this.addSystemMessage(roomId, `Someone tried to join but the room is full`);
+                    return; // Don't send handshake or add them
+                }
 
                 // Send our handshake
                 const myPublicKey = await window.e2eCrypto.getPublicKeyString();
@@ -581,7 +844,12 @@ class P2PChat {
         if (this.activeRoomId) {
             const activeRoom = this.rooms.get(this.activeRoomId);
             const peerCount = activeRoom ? activeRoom.peers.size : 0;
-            document.getElementById('peerCountBadgeHeader').textContent = `${peerCount} peer${peerCount !== 1 ? 's' : ''}`;
+            // 1-on-1 chat status
+            if (peerCount === 1) {
+                document.getElementById('peerCountBadgeHeader').textContent = '🟢 Online';
+            } else {
+                document.getElementById('peerCountBadgeHeader').textContent = '⚪ Waiting...';
+            }
         }
 
         // Build rooms list
@@ -591,8 +859,8 @@ class P2PChat {
             html = `
                 <div class="empty-rooms">
                     <span class="empty-icon-small">💬</span>
-                    <p>No rooms yet</p>
-                    <p class="hint">Create or join a room to start chatting</p>
+                    <p>No chats yet</p>
+                    <p class="hint">Start a new chat to begin</p>
                 </div>
             `;
         } else {
