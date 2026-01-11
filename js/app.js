@@ -1,8 +1,8 @@
-// P2P Chat App - Using Trystero for reliable P2P (like Chitchatter)
-// Trystero uses BitTorrent trackers for signaling - much more reliable than PeerJS cloud
+// P2P Chat App - Using Trystero for reliable P2P
+// Switched to Nostr relay signaling for better reliability
 // Multi-room support enabled
 
-import { joinRoom } from 'https://esm.sh/trystero/torrent';
+import { joinRoom } from 'https://esm.sh/trystero/nostr';
 
 class P2PChat {
     constructor() {
@@ -605,18 +605,22 @@ class P2PChat {
         document.getElementById('connectionStatus').classList.remove('connected');
 
         try {
-            // Using Trystero with BitTorrent trackers
-            // Adding multiple trackers for reliability
+            // Using Trystero with Nostr relay signaling
             const config = {
                 appId: 'p2p-chat-nanu-' + roomId,
-                // Use multiple reliable trackers
+                // Nostr relays for signaling
+                relayUrls: [
+                    'wss://relay.damus.io',
+                    'wss://nos.lol',
+                    'wss://relay.nostr.band',
+                    'wss://nostr.wine'
+                ],
+                // ICE servers for NAT traversal
                 rtcConfig: {
                     iceServers: [
                         { urls: 'stun:stun.l.google.com:19302' },
                         { urls: 'stun:stun1.l.google.com:19302' },
-                        { urls: 'stun:stun2.l.google.com:19302' },
-                        { urls: 'stun:stun3.l.google.com:19302' },
-                        { urls: 'stun:stun4.l.google.com:19302' }
+                        { urls: 'stun:stun2.l.google.com:19302' }
                     ]
                 }
             };
