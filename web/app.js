@@ -50,7 +50,7 @@ const App = {
             myAvatar: document.getElementById('my-avatar'),
             myName: document.getElementById('my-name'),
             mySessionId: document.getElementById('my-session-id'),
-        btnCopyId: document.getElementById('btn-copy-id'),
+            btnCopyId: document.getElementById('btn-copy-id'),
             contactsList: document.getElementById('contacts-list'),
             groupsList: document.getElementById('groups-list'),
             tabs: document.querySelectorAll('.tab'),
@@ -198,8 +198,20 @@ const App = {
     },
 
     copyId() {
-        navigator.clipboard.writeText(this.me.id);
-        alert('Session ID copied!\n' + this.me.id);
+        navigator.clipboard.writeText(this.me.id).then(() => {
+            // Show visual feedback
+            const btn = this.$.btnCopyId;
+            const original = btn.textContent;
+            btn.textContent = '✓';
+            btn.style.color = 'var(--online)';
+            setTimeout(() => {
+                btn.textContent = original;
+                btn.style.color = '';
+            }, 1500);
+        }).catch(() => {
+            // Fallback - show the full ID for manual copy
+            prompt('Copy your Session ID:', this.me.id);
+        });
     },
 
     switchTab(tab) {
