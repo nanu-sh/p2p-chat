@@ -50,6 +50,7 @@ const App = {
             myAvatar: document.getElementById('my-avatar'),
             myName: document.getElementById('my-name'),
             mySessionId: document.getElementById('my-session-id'),
+        btnCopyId: document.getElementById('btn-copy-id'),
             contactsList: document.getElementById('contacts-list'),
             groupsList: document.getElementById('groups-list'),
             tabs: document.querySelectorAll('.tab'),
@@ -97,6 +98,7 @@ const App = {
 
         // Session ID copy
         this.$.mySessionId.addEventListener('click', () => this.copyId());
+        this.$.btnCopyId.addEventListener('click', () => this.copyId());
 
         // Tabs
         this.$.tabs.forEach(t => t.addEventListener('click', () => this.switchTab(t.dataset.tab)));
@@ -105,11 +107,6 @@ const App = {
         this.$.btnAddContact.addEventListener('click', () => this.showModal('add-contact'));
         this.$.btnCancelContact.addEventListener('click', () => this.hideModal('add-contact'));
         this.$.btnSaveContact.addEventListener('click', () => this.addContact());
-
-        // Create group
-        this.$.btnCreateGroup.addEventListener('click', () => this.showModal('create-group'));
-        this.$.btnCancelGroup.addEventListener('click', () => this.hideModal('create-group'));
-        this.$.btnSaveGroup.addEventListener('click', () => this.createGroup());
 
         // Messaging
         this.$.msgInput.addEventListener('input', () => {
