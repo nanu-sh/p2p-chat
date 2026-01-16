@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>P2P Chat</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <!-- Setup Screen - First time / No identity -->
+    <div id="setup-screen" class="screen">
+        <div class="setup-card">
+            <h1>🔒 P2P Chat</h1>
+            <p>Private, encrypted chat for you and your friends.</p>
+            <input type="text" id="setup-name" placeholder="Your display name" maxlength="20">
+            <button id="btn-setup">Get Started</button>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="main-screen" class="screen hidden">
+        <!-- Sidebar -->
+        <aside id="sidebar">
+            <div class="sidebar-header">
+                <div class="user-info">
+                    <div class="avatar" id="my-avatar">?</div>
+                    <div class="user-details">
+                        <span id="my-name">Me</span>
+                        <span class="session-id" id="my-session-id" title="Click to copy">Session ID</span>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button id="btn-add-contact" title="Add Contact">➕</button>
+                </div>
+            </div>
+
+            <div id="contacts-list" class="list"></div>
+        </aside>
+
+        <!-- Chat Area -->
+        <main id="chat-area">
+            <div id="no-chat" class="empty-state">
+                <p>Select a contact to start chatting</p>
+            </div>
+
+            <div id="active-chat" class="hidden">
+                <header id="chat-header">
+                    <div class="chat-info">
+                        <div class="avatar" id="chat-avatar">?</div>
+                        <div class="chat-details">
+                            <span id="chat-name">Name</span>
+                            <span id="chat-status">Offline</span>
+                        </div>
+                    </div>
+                    <div class="chat-actions">
+                        <button id="btn-call" title="Voice Call">📞</button>
+                        <button id="btn-delete-chat" title="Delete" class="danger">🗑️</button>
+                    </div>
+                </header>
+
+
+
+                <div id="messages"></div>
+
+                <footer id="chat-footer">
+                    <button id="btn-attach" title="Send File">📎</button>
+                    <input type="file" id="file-input" hidden>
+                    <input type="text" id="msg-input" placeholder="Type a message..." autocomplete="off">
+                    <button id="btn-send" disabled>Send</button>
+                </footer>
+            </div>
+        </main>
+    </div>
+
+    <!-- Add Contact Modal -->
+    <div id="modal-add-contact" class="modal hidden">
+        <div class="modal-content">
+            <h2>Add Contact</h2>
+            <input type="text" id="contact-session-id" placeholder="Friend's Session ID">
+            <input type="text" id="contact-name" placeholder="Nickname for them" maxlength="20">
+            <div class="modal-actions">
+                <button id="btn-cancel-contact" class="secondary">Cancel</button>
+                <button id="btn-save-contact">Add</button>
+            </div>
+        </div>
+    </div>
+
+
+
+    <!-- Call Modal -->
+    <div id="modal-call" class="modal hidden">
+        <div class="modal-content call-modal">
+            <div class="call-avatar" id="call-avatar">?</div>
+            <div id="call-name">Calling...</div>
+            <div id="call-status">Connecting...</div>
+            <audio id="remote-audio" autoplay></audio>
+            <div class="call-actions">
+                <button id="btn-end-call" class="danger">End Call</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="config.js"></script>
+    <script src="crypto.js"></script>
+    <script src="storage.js"></script>
+    <script src="signaling.js"></script>
+    <script src="webrtc.js"></script>
+    <script src="app.js"></script>
+</body>
+
+</html>

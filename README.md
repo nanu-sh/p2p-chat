@@ -1,64 +1,44 @@
-# P2P Encrypted Chat (WhatsApp-like)
+# P2P Session Chat
 
-A persistent-identity, ephemeral-messaging P2P chat application built with Vanilla JS, WebRTC, and WebCrypto.
+A private, ephemeral P2P chat application inspired by Session Messenger.
 
-## Architecture
+- **🔒 Safe**: End-to-End Encrypted (AES-GCM 256-bit).
+- **💸 Free**: Free to use, free to host.
+- **⚡ Fast**: Direct P2P connection via WebRTC.
+- **Session ID**: Your identity is your Key. No phone numbers, no specific servers required.
 
-1.  **Transport**: P2P via WebRTC DataChannels (Mesh topology for groups).
-2.  **Signaling**: Stateless Node.js WebSocket server (routes messages, does not store them).
-3.  **Storage**: IndexedDB for **Identity & Contacts ONLY**. Messages are **never** stored (ephemeral in-memory).
-4.  **Encryption**:
-    *   **Identity**: ECDH P-256 Key Pairs.
-    *   **1:1 Chat**: ECDH + HKDF -> AES-GCM (256-bit).
-    *   **Group Chat**: Random AES-GCM Group Key, distributed via 1:1 channels (Wrapped).
-    *   **Verification**: Fingerprint comparison (SHA-256 of Public Keys).
+## 🚀 How to use over the Internet (Free, Safe, Encrypted)
 
-## Threat Model & Security
+To chat securely over the internet, you need a **Signaling Server** to introduce peers. You can host this for free.
 
-*   **End-to-End Encrypted**: All chat content is encrypted before leaving the browser. The signaling server sees only opaque blobs.
-*   **Ephemeral**: Messages effectively "self-destruct" on page refresh. No residual logs on disk.
-*   **Metadata Leakage**: The signaling server knows *who* is talking to *whom* (Peer IDs and connection times). WebRTC reveals IP addresses to peers (unless TURN is strictly enforced/proxied, currently using public STUN).
-*   **Trust on First Use (TOFU)**: You must exchange Public Keys ID strings securely out-of-band (e.g. paste into the "Add Contact" modal). If an attacker intercepts this exchange, they could MITM. Use the "Fingerprint" verification to confirm keys.
+### Option 1: One-Click Public Server (Recommended)
+Deploy the Signaling Server to Render for free.
 
-## Running Locally
+1.  **Fork** this repo to your GitHub.
+2.  **Sign up** for [Render](https://render.com) (Free).
+3.  **New Web Service** -> Connect your GitHub repo.
+4.  Render will auto-detect the `p2p-chat-signaling` folder config.
+5.  **Deploy**.
+6.  Render will give you a URL (e.g., `https://my-chat.onrender.com`).
+    *   Change `https` to `wss`.
+    *   Enter this as the **Signaling Server** in the app's "Advanced" settings.
 
-### 1. Signaling Server
-```bash
-cd signaling
-npm install
-npm start
-# Runs on Port 8080
-```
+### Option 2: Temporary Tunnel (For Testing)
+Use `localtunnel` to expose your computer's server for a quick chat.
 
-### 2. Frontend
-You can serve the `web` folder with any static server.
-```bash
-# Example using python
-cd web
-python3 -m http.server 3000
-```
-Open `http://localhost:3000` in two different browser windows (or Incognito).
+1.  Start local server: `cd signaling && npm start`.
+2.  Start tunnel: `npx localtunnel --port 8080`.
+3.  Use the `wss://...` URL it gives you.
 
-## Deployment (GitHub Pages)
+## 🛡️ Security Details
 
-1.  **Deploy Frontend**:
-    *   Push the `/web` folder to a GitHub repository.
-    *   Enable GitHub Pages for that repository (Source: /web).
-2.  **Deploy Signaling**:
-    *   Deploy the `/signaling` folder to a Node.js host (Render, Fly.io, Heroku).
-    *   **Important**: It must support **WSS** (Secure WebSockets) to work with HTTPS GitHub Pages.
-    *   Update `web/config.js` with your new `SIGNALING_URL`.
+-   **Encryption**: All messages are encrypted **on your device** using your recipient's Public Key before they are sent.
+-   **No Logs**: The signaling server only blindly forwards encrypted "blobs". It cannot read your messages.
+-   **No Storage**: Messages are never saved to a database. They exist only in your browser's memory.
+-   **Verification**: Compare the **Session ID** (top left) with your friend to ensure no one is intercepting the chat.
 
-## Usage Guide
-1.  **First Run**: The app generates a unique ID and Key Pair.
-2.  **Share ID**: Open Console (`Ctrl+Shift+J`) and run `getMyShareBlob()` to get your JSON connection string.
-3.  **Add Contact**: Click "+" and paste the blob from your friend.
-4.  **Chat**: Messages are sent P2P. Green = Encrypted.
-5.  **Voice**: Click the Phone icon to start a WebRTC audio track call.
+## 💻 Local Development
 
-## Browser Support
-Requires modern browsers with support for:
-*   WebRTC (DataChannel + MediaStream)
-*   WebCrypto (ECDH, HKDF, AES-GCM)
-*   ES6 Modules
-*   Tested on Chrome 120+, Firefox 120+
+1.  `cd signaling && npm start`
+2.  `cd web && python -m http.server 3000`
+3.  Open `http://localhost:3000`

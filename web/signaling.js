@@ -1,49 +1,74 @@
+// Signaling client - Simple WebSocket wrapper
+
 class SignalingClient {
-    constructor(url, selfId, onMessage, onOpen) {
+    constructor(url) {
         this.url = url;
-        this.selfId = selfId;
-        this.onMessage = onMessage;
-        this.onOpen = onOpen;
         this.ws = null;
-        this.reconnectDelay = 1000;
-        this.connect();
+        this.myId = null;
+        this.handlers = {};
+        this.rooms = new Set();
     }
 
-    connect() {
-        console.log("Connecting to signaling...");
+    connect(myId) {
+        this.myId = myId;
         this.ws = new WebSocket(this.url);
 
         this.ws.onopen = () => {
-            console.log("Signaling Connected");
-            this.reconnectDelay = 1000;
-            if (this.onOpen) this.onOpen();
+            console.log('[WS] Connected');
+            // Rejoin all rooms
+            for (const room of this.rooms) {
+                this._send({ t: 'join', room, id: this.myId });
+            }
+            this._emit('open');
         };
 
-        this.ws.onmessage = (event) => {
+        this.ws.onmessage = (e) => {
             try {
-                const data = JSON.parse(event.data);
-                this.onMessage(data);
-            } catch (e) { console.error("Signaling msg error", e); }
+                const msg = JSON.parse(e.data);
+                this._emit(msg.t, msg);
+            } catch (err) {
+                console.error('[WS] Parse error:', err);
+            }
         };
 
         this.ws.onclose = () => {
-            console.log("Signaling Disconnected. Reconnecting...");
-            setTimeout(() => this.connect(), this.reconnectDelay);
-            this.reconnectDelay = Math.min(this.reconnectDelay * 2, 10000);
+            console.log('[WS] Disconnected, reconnecting in 3s...');
+            this._emit('close');
+            setTimeout(() => this.connect(this.myId), 3000);
+        };
+
+        this.ws.onerror = (err) => {
+            console.error('[WS] Error:', err);
         };
     }
 
-    join(roomId) {
-        this.send({ t: 'join', roomId, selfId: this.selfId });
+    join(room) {
+        this.rooms.add(room);
+        this._send({ t: 'join', room, id: this.myId });
     }
 
-    sendSignal(roomId, to, payload) {
-        this.send({ t: 'signal', roomId, to, payload });
+    leave(room) {
+        this.rooms.delete(room);
+        this._send({ t: 'leave', room, id: this.myId });
     }
 
-    send(msg) {
+    send(room, to, data) {
+        this._send({ t: 'signal', room, from: this.myId, to, data });
+    }
+
+    on(event, handler) {
+        if (!this.handlers[event]) this.handlers[event] = [];
+        this.handlers[event].push(handler);
+    }
+
+    _emit(event, data) {
+        const handlers = this.handlers[event] || [];
+        handlers.forEach(h => h(data));
+    }
+
+    _send(obj) {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(msg));
+            this.ws.send(JSON.stringify(obj));
         }
     }
 }

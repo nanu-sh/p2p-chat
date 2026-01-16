@@ -1,92 +1,121 @@
-class RTCManager {
-    constructor(selfId, config, sendSignal, onData, onStream) {
-        this.selfId = selfId;
-        this.config = config;
-        this.sendSignal = sendSignal; // (roomId, to, payload)
-        this.onData = onData;
-        this.onStream = onStream;
-        this.peers = new Map(); // peerId -> { pc, dc, roomId }
-    }
+// Simple WebRTC connection manager
 
-    getPeer(peerId) { return this.peers.get(peerId); }
+class RTCPeer {
+    constructor(config, peerId, initiator, onSignal, onOpen, onMessage, onClose) {
+        this.peerId = peerId;
+        this.onSignal = onSignal;
+        this.onOpen = onOpen;
+        this.onMessage = onMessage;
+        this.onClose = onClose;
 
-    connect(roomId, peerId, initiator = false) {
-        if (this.peers.has(peerId)) return;
+        this.pc = new RTCPeerConnection(config);
+        this.dc = null;
+        this.connected = false;
 
-        console.log(`RTC: Connect to ${peerId} (Initiator: ${initiator})`);
-        const pc = new RTCPeerConnection(this.config);
-        const peerObj = { pc, id: peerId, roomId, dc: null };
-        this.peers.set(peerId, peerObj);
-
-        pc.onicecandidate = (e) => {
+        this.pc.onicecandidate = (e) => {
             if (e.candidate) {
-                this.sendSignal(roomId, peerId, { type: 'candidate', candidate: e.candidate });
+                this.onSignal({ type: 'ice', ice: e.candidate });
             }
         };
 
-        pc.onconnectionstatechange = () => {
-            console.log(`Connection to ${peerId}: ${pc.connectionState}`);
-            if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-                this.peers.delete(peerId);
+        this.pc.onconnectionstatechange = () => {
+            console.log(`[RTC ${peerId}] State: ${this.pc.connectionState}`);
+            if (this.pc.connectionState === 'connected') {
+                this.connected = true;
             }
+            if (this.pc.connectionState === 'failed' || this.pc.connectionState === 'closed') {
+                this.onClose();
+            }
+        };
+
+        this.pc.ondatachannel = (e) => {
+            this._setupChannel(e.channel);
+        };
+
+        this.pc.ontrack = (e) => {
+            if (this.onTrack) this.onTrack(e.streams[0]);
         };
 
         if (initiator) {
-            const dc = pc.createDataChannel("chat");
-            this._setupDataChannel(dc, peerId);
-            peerObj.dc = dc;
-
-            pc.createOffer().then(offer => {
-                pc.setLocalDescription(offer);
-                this.sendSignal(roomId, peerId, { type: 'offer', sdp: offer });
-            });
-        } else {
-            pc.ondatachannel = (e) => {
-                this._setupDataChannel(e.channel, peerId);
-                peerObj.dc = e.channel;
-            };
+            this.dc = this.pc.createDataChannel('data');
+            this._setupChannel(this.dc);
+            this._createOffer();
         }
     }
 
-    async handleSignal(peerId, payload) {
-        let peer = this.peers.get(peerId);
-        // If receive offer but no peer, create one (Responder)
-        if (!peer && payload.type === 'offer') {
-            // We need to know roomId... context needed. 
-            // Ideally signaling protocol passes roomId with message.
-            // Assuming caller passed roomId in outside context or we track active room.
-            // For now, accept we might have issues if we are not "expecting" calls.
-            console.warn("Received offer from unknown peer context", peerId);
-            return; // Wait for explicit room join trigger or Handle in App
-        }
+    async _createOffer() {
+        const offer = await this.pc.createOffer();
+        await this.pc.setLocalDescription(offer);
+        this.onSignal({ type: 'offer', sdp: offer });
+    }
 
-        // Special case: App calls connect(false) then we get offer.
-        if (peer) {
-            const { pc } = peer;
-            if (payload.type === 'offer') {
-                await pc.setRemoteDescription(payload.sdp);
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
-                this.sendSignal(peer.roomId, peerId, { type: 'answer', sdp: answer });
-            } else if (payload.type === 'answer') {
-                await pc.setRemoteDescription(payload.sdp);
-            } else if (payload.type === 'candidate') {
-                await pc.addIceCandidate(payload.candidate);
+    async handleSignal(data) {
+        try {
+            if (data.type === 'offer') {
+                // Check if we're in a state where we can accept an offer
+                if (this.pc.signalingState !== 'stable' && this.pc.signalingState !== 'have-local-offer') {
+                    console.warn(`[RTC ${this.peerId}] Ignoring offer in state: ${this.pc.signalingState}`);
+                    return;
+                }
+
+                // Handle glare (both sides sent offers) - higher ID yields
+                if (this.pc.signalingState === 'have-local-offer') {
+                    // Rollback if we should yield
+                    console.log(`[RTC ${this.peerId}] Glare detected, rolling back local offer`);
+                    await this.pc.setLocalDescription({ type: 'rollback' });
+                }
+
+                await this.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                const answer = await this.pc.createAnswer();
+                await this.pc.setLocalDescription(answer);
+                this.onSignal({ type: 'answer', sdp: answer });
+            } else if (data.type === 'answer') {
+                // Only accept answer if we're waiting for one
+                if (this.pc.signalingState !== 'have-local-offer') {
+                    console.warn(`[RTC ${this.peerId}] Ignoring answer in state: ${this.pc.signalingState}`);
+                    return;
+                }
+                await this.pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+            } else if (data.type === 'ice') {
+                // Only add ICE candidates if we have a remote description
+                if (this.pc.remoteDescription) {
+                    await this.pc.addIceCandidate(new RTCIceCandidate(data.ice));
+                } else {
+                    console.warn(`[RTC ${this.peerId}] Ignoring ICE candidate - no remote description yet`);
+                }
             }
+        } catch (err) {
+            console.error(`[RTC ${this.peerId}] Signal error:`, err);
         }
     }
 
-    _setupDataChannel(dc, peerId) {
-        dc.onopen = () => console.log(`DataChannel open with ${peerId}`);
-        dc.onmessage = (e) => this.onData(peerId, e.data);
+    _setupChannel(channel) {
+        this.dc = channel;
+        channel.onopen = () => {
+            console.log(`[RTC ${this.peerId}] Channel open`);
+            this.connected = true;
+            this.onOpen();
+        };
+        channel.onclose = () => {
+            console.log(`[RTC ${this.peerId}] Channel closed`);
+            this.connected = false;
+            this.onClose();
+        };
+        channel.onmessage = (e) => {
+            this.onMessage(e.data);
+        };
     }
 
-    send(peerId, msg) {
-        const p = this.peers.get(peerId);
-        if (p && p.dc && p.dc.readyState === 'open') {
-            p.dc.send(msg);
-        } else {
-            console.warn(`Cannot send to ${peerId} - DC not open`);
+    send(data) {
+        if (this.dc && this.dc.readyState === 'open') {
+            this.dc.send(data);
+            return true;
         }
+        return false;
+    }
+
+    close() {
+        if (this.dc) this.dc.close();
+        this.pc.close();
     }
 }
