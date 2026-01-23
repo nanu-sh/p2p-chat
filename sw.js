@@ -1,5 +1,5 @@
-// Service Worker for P2P Chat PWA - Version 10
-const CACHE_NAME = 'p2p-chat-v10';
+// Service Worker for P2P Chat PWA - Version 11
+const CACHE_NAME = 'p2p-chat-v11';
 const urlsToCache = [
     './',
     './index.html',

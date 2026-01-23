@@ -350,6 +350,9 @@ const App = {
         this.renderMessages();
         this.renderContacts();
         this.$.msgInput.focus();
+
+        // Send read receipts for unread messages
+        this.sendReadReceipts(contactId);
     },
 
     closeChat() {
@@ -385,8 +388,11 @@ const App = {
             content = `<div class="text">${this.escapeHtml(msg.text)}</div>`;
         }
 
-        // Only show ticks for sent messages
-        const tickHtml = msg.sent ? `<span class="tick${msg.delivered ? ' delivered' : ''}"></span>` : '';
+        // Tick states: sent → delivered (✓✓ gray) → read (✓✓ blue)
+        let tickClass = 'tick';
+        if (msg.read) tickClass += ' read';
+        else if (msg.delivered) tickClass += ' delivered';
+        const tickHtml = msg.sent ? `<span class="${tickClass}"></span>` : '';
 
         div.innerHTML = `
             ${content}
@@ -492,6 +498,7 @@ const App = {
         const [sendFile, onFile] = room.makeAction('file');
         const [sendTyping, onTyping] = room.makeAction('typing');
         const [sendAck, onAck] = room.makeAction('ack');
+        const [sendRead, onRead] = room.makeAction('read');
 
         room._send = sendMsg;
         room._sendId = sendId;
@@ -499,10 +506,16 @@ const App = {
         room._sendFile = sendFile;
         room._sendTyping = sendTyping;
         room._sendAck = sendAck;
+        room._sendRead = sendRead;
 
         // Handle message ACK (delivery confirmation)
         onAck((data, peerId) => {
             this.handleAck(contactId, data.id);
+        });
+
+        // Handle read receipts
+        onRead((data, peerId) => {
+            this.handleRead(contactId, data.ids);
         });
 
         // Handle typing indicator
@@ -780,6 +793,46 @@ const App = {
                 this.renderMessages();
             }
         }
+    },
+
+    handleRead(contactId, msgIds) {
+        const all = localStorage.getItem('p2p_messages');
+        const allMsgs = all ? JSON.parse(all) : {};
+        if (!allMsgs[contactId]) return;
+
+        let updated = false;
+        for (const msg of allMsgs[contactId]) {
+            if (msgIds.includes(msg.id) && !msg.read) {
+                msg.read = true;
+                msg.delivered = true; // Also mark as delivered
+                updated = true;
+            }
+        }
+
+        if (updated) {
+            localStorage.setItem('p2p_messages', JSON.stringify(allMsgs));
+            console.log('[Read] Marked as read:', msgIds.length, 'messages');
+            if (this.activeContact === contactId) {
+                this.renderMessages();
+            }
+        }
+    },
+
+    sendReadReceipts(contactId) {
+        const room = this.rooms.get(contactId);
+        if (!room?._sendRead) return;
+
+        // Get all received messages that haven't been read-receipted yet
+        const msgs = Storage.getMessages(contactId);
+        const unreadIds = msgs
+            .filter(m => !m.sent && m.id) // Only received messages with IDs
+            .map(m => m.id);
+
+        if (unreadIds.length === 0) return;
+
+        // Send read receipt for all unread messages
+        room._sendRead({ ids: unreadIds });
+        console.log('[Read] Sent read receipts for', unreadIds.length, 'messages');
     },
 
     // --- Voice Call ---
