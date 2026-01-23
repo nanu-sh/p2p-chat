@@ -23,6 +23,11 @@
     --received-bg: #202c33;
     --danger: #ea4335;
     --online: #00a884;
+    /* Safe area insets for iOS */
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
 }
 
 html,
@@ -32,14 +37,32 @@ body {
     font-size: 14px;
     background: var(--bg-app);
     color: var(--text);
+    /* Prevent overscroll on iOS */
+    overscroll-behavior: none;
+    -webkit-overflow-scrolling: touch;
 }
 
 .screen {
     height: 100%;
+    /* Account for safe areas */
+    padding-top: var(--safe-top);
 }
 
 .hidden {
     display: none !important;
+}
+
+/* Visually hidden but accessible to screen readers */
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
 }
 
 /* Setup Screen */
@@ -380,6 +403,25 @@ body {
     color: rgba(255, 255, 255, 0.6);
 }
 
+/* Delivery Ticks */
+.message .tick {
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.5);
+    margin-left: 2px;
+}
+
+.message .tick.delivered {
+    color: #53bdeb;
+}
+
+.message.sent .tick::before {
+    content: "✓";
+}
+
+.message.sent .tick.delivered::before {
+    content: "✓✓";
+}
+
 .system-msg {
     text-align: center;
     color: var(--text-secondary);
@@ -451,6 +493,7 @@ body {
 .chat-input {
     background: var(--bg-header);
     padding: 10px 16px;
+    padding-bottom: calc(10px + var(--safe-bottom));
     display: flex;
     gap: 12px;
     align-items: center;
