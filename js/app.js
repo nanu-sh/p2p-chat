@@ -81,7 +81,9 @@ const App = {
     bindEvents() {
         // Setup
         this.$.btnSetup.onclick = () => this.setup();
-        this.$.setupName.onkeydown = e => e.key === 'Enter' && this.setup();
+        this.$.setupName.onkeydown = (e) => {
+            if (e.key === 'Enter') this.setup();
+        };
 
         // Back button (mobile)
         this.$.btnBack.onclick = () => this.closeChat();
