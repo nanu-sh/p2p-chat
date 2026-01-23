@@ -1104,6 +1104,88 @@ button.danger {
     border-radius: 3px;
 }
 
+/* Context Menu (right-click / long-press) */
+.context-menu {
+    position: fixed;
+    background: var(--bg-header);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    min-width: 180px;
+    z-index: 1000;
+    overflow: hidden;
+    animation: contextFadeIn 0.15s ease-out;
+}
+
+@keyframes contextFadeIn {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.context-menu.hidden {
+    display: none;
+}
+
+.context-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 12px 16px;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 14px;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s;
+}
+
+.context-item:hover {
+    background: var(--bg-hover);
+}
+
+.context-item:active {
+    background: var(--bg-active);
+}
+
+.context-item.danger {
+    color: var(--danger);
+}
+
+.context-item.danger:hover {
+    background: rgba(234, 67, 53, 0.15);
+}
+
+.context-icon {
+    font-size: 16px;
+    width: 20px;
+    text-align: center;
+}
+
+.context-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 0;
+}
+
+/* Hide old delete button when context menu is available */
+.message .delete-btn {
+    display: none !important;
+}
+
+/* Long-press visual feedback */
+.message.long-press-active {
+    transform: scale(0.98);
+    opacity: 0.8;
+}
+
 /* Back Button (mobile only) */
 .back-btn {
     display: none;

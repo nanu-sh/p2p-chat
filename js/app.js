@@ -33,12 +33,18 @@ const App = {
     isTyping: false,
     typingTimeout: null,
 
+    // Context menu
+    contextTarget: null, // { index, message, element }
+    longPressTimer: null,
+    longPressTriggered: false,
+
     // DOM cache
     $: {},
 
     async init() {
         this.cacheDom();
         this.bindEvents();
+        this.initContextMenuListeners();
 
         const saved = Storage.getIdentity();
         if (saved) {
@@ -106,6 +112,8 @@ const App = {
             btnCopyFingerprint: document.getElementById('btn-copy-fingerprint'),
             btnVerifyContact: document.getElementById('btn-verify-contact'),
             btnCloseFingerprint: document.getElementById('btn-close-fingerprint'),
+            // Context menu
+            contextMenu: document.getElementById('context-menu'),
         };
     },
 
@@ -426,12 +434,10 @@ const App = {
                 <span class="time">${new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 ${tickHtml}
             </div>
-            <button class="delete-btn" title="Delete message" aria-label="Delete this message">🗑️</button>
         `;
 
-        // Bind delete button
-        const deleteBtn = div.querySelector('.delete-btn');
-        deleteBtn.onclick = () => this.deleteMessage(index);
+        // Setup context menu (right-click + long-press)
+        this.setupMessageContextMenu(div, index, msg);
 
         this.$.messages.appendChild(div);
         this.$.messages.scrollTop = this.$.messages.scrollHeight;
@@ -1594,6 +1600,155 @@ const App = {
         await this.joinRoom(contactId);
 
         console.log('[Reconnect] Rejoined room for', contactId);
+    },
+
+    // --- Context Menu ---
+    showContextMenu(x, y, index, message, element) {
+        this.contextTarget = { index, message, element };
+
+        const menu = this.$.contextMenu;
+        menu.classList.remove('hidden');
+
+        // Position menu, keeping it within viewport
+        const menuRect = menu.getBoundingClientRect();
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+
+        let left = x;
+        let top = y;
+
+        // Adjust if menu would go off-screen
+        if (x + menuRect.width > viewportWidth) {
+            left = viewportWidth - menuRect.width - 10;
+        }
+        if (y + menuRect.height > viewportHeight) {
+            top = viewportHeight - menuRect.height - 10;
+        }
+
+        menu.style.left = `${Math.max(10, left)}px`;
+        menu.style.top = `${Math.max(10, top)}px`;
+    },
+
+    hideContextMenu() {
+        this.$.contextMenu.classList.add('hidden');
+        this.contextTarget = null;
+    },
+
+    handleContextAction(action) {
+        if (!this.contextTarget) return;
+
+        const { index, message } = this.contextTarget;
+
+        switch (action) {
+            case 'copy':
+                const text = message.text || message.filename || '';
+                navigator.clipboard.writeText(text).then(() => {
+                    console.log('[Context] Copied to clipboard');
+                });
+                break;
+
+            case 'reply':
+                // Focus input and add reply indicator
+                this.$.msgInput.focus();
+                this.$.msgInput.placeholder = `Reply to: "${(message.text || message.filename || '').slice(0, 30)}..."`;
+                break;
+
+            case 'info':
+                const time = new Date(message.time).toLocaleString();
+                const status = message.sent ?
+                    (message.read ? 'Read' : message.delivered ? 'Delivered' : 'Sent') :
+                    'Received';
+                alert(`Time: ${time}\nStatus: ${status}\nType: ${message.type || 'text'}`);
+                break;
+
+            case 'delete':
+                this.deleteMessage(index);
+                break;
+        }
+
+        this.hideContextMenu();
+    },
+
+    setupMessageContextMenu(element, index, message) {
+        // Right-click (desktop)
+        element.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            this.showContextMenu(e.clientX, e.clientY, index, message, element);
+        });
+
+        // Long-press (mobile)
+        let touchStartTime = 0;
+        let touchMoved = false;
+
+        element.addEventListener('touchstart', (e) => {
+            touchStartTime = Date.now();
+            touchMoved = false;
+            this.longPressTriggered = false;
+
+            this.longPressTimer = setTimeout(() => {
+                if (!touchMoved) {
+                    this.longPressTriggered = true;
+                    element.classList.add('long-press-active');
+
+                    // Vibrate for haptic feedback if supported
+                    if (navigator.vibrate) navigator.vibrate(50);
+
+                    const touch = e.touches[0];
+                    this.showContextMenu(touch.clientX, touch.clientY, index, message, element);
+                }
+            }, 500); // 500ms long-press
+        }, { passive: true });
+
+        element.addEventListener('touchmove', () => {
+            touchMoved = true;
+            if (this.longPressTimer) {
+                clearTimeout(this.longPressTimer);
+                this.longPressTimer = null;
+            }
+            element.classList.remove('long-press-active');
+        }, { passive: true });
+
+        element.addEventListener('touchend', (e) => {
+            if (this.longPressTimer) {
+                clearTimeout(this.longPressTimer);
+                this.longPressTimer = null;
+            }
+            element.classList.remove('long-press-active');
+
+            // Prevent click if long-press was triggered
+            if (this.longPressTriggered) {
+                e.preventDefault();
+            }
+        });
+    },
+
+    initContextMenuListeners() {
+        // Close menu on click outside
+        document.addEventListener('click', (e) => {
+            if (!this.$.contextMenu.contains(e.target)) {
+                this.hideContextMenu();
+            }
+        });
+
+        // Close menu on scroll
+        this.$.messages?.addEventListener('scroll', () => {
+            this.hideContextMenu();
+        });
+
+        // Handle menu item clicks
+        this.$.contextMenu.querySelectorAll('.context-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                const action = item.dataset.action;
+                this.handleContextAction(action);
+            });
+        });
+
+        // Close on ESC
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                this.hideContextMenu();
+            }
+        });
     }
 };
 

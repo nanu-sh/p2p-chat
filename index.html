@@ -205,6 +205,28 @@
         </div>
     </div>
 
+    <!-- Message Context Menu -->
+    <div id="context-menu" class="context-menu hidden" role="menu">
+        <button class="context-item" data-action="copy" role="menuitem">
+            <span class="context-icon">📋</span>
+            <span>Copy</span>
+        </button>
+        <button class="context-item" data-action="reply" role="menuitem">
+            <span class="context-icon">↩️</span>
+            <span>Reply</span>
+        </button>
+        <div class="context-divider"></div>
+        <button class="context-item" data-action="info" role="menuitem">
+            <span class="context-icon">ℹ️</span>
+            <span>Info</span>
+        </button>
+        <div class="context-divider"></div>
+        <button class="context-item danger" data-action="delete" role="menuitem">
+            <span class="context-icon">🗑️</span>
+            <span>Delete</span>
+        </button>
+    </div>
+
     <script type="module" src="js/app.js"></script>
 </body>
 
