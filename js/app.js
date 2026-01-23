@@ -17,6 +17,21 @@ const App = {
     // State
     activeContact: null,
 
+    // File transfer
+    pendingFiles: new Map(), // fileId -> { chunks: [], metadata }
+    CHUNK_SIZE: 16384, // 16KB chunks
+
+    // Voice recording
+    mediaRecorder: null,
+    audioChunks: [],
+    recordingStartTime: null,
+    recordingInterval: null,
+
+    // Typing indicators
+    typingTimeouts: new Map(), // contactId -> timeout
+    isTyping: false,
+    typingTimeout: null,
+
     // DOM cache
     $: {},
 
@@ -74,6 +89,7 @@ const App = {
             btnAttach: document.getElementById('btn-attach'),
             fileInput: document.getElementById('file-input'),
             btnVoice: document.getElementById('btn-voice'),
+            btnDisconnect: document.getElementById('btn-disconnect'),
             chatInputFooter: document.querySelector('.chat-input'),
         };
     },
@@ -99,6 +115,11 @@ const App = {
         // Messaging
         this.$.msgInput.oninput = () => {
             this.$.btnSend.disabled = !this.$.msgInput.value.trim();
+
+            // Send typing indicator
+            if (this.activeContact && this.$.msgInput.value.trim()) {
+                this.sendTypingSignal();
+            }
         };
         this.$.msgInput.onkeydown = e => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -117,6 +138,16 @@ const App = {
 
         // Delete
         this.$.btnDelete.onclick = () => this.deleteContact();
+
+        // File attachment
+        this.$.btnAttach.onclick = () => this.$.fileInput.click();
+        this.$.fileInput.onchange = (e) => this.handleFileSelect(e);
+
+        // Voice note
+        this.$.btnVoice.onclick = () => this.toggleVoiceRecording();
+
+        // Disconnect
+        this.$.btnDisconnect.onclick = () => this.disconnectPeer();
     },
 
     // --- Setup ---
@@ -239,6 +270,14 @@ const App = {
 
             const div = document.createElement('div');
             div.className = 'contact-item' + (this.activeContact === id ? ' active' : '');
+
+            let statusText = 'No messages yet';
+            if (c.typing) {
+                statusText = 'typing...';
+            } else if (lastMsg) {
+                statusText = this.escapeHtml(lastMsg.text || lastMsg.filename || 'File').slice(0, 30);
+            }
+
             div.innerHTML = `
                 <div class="avatar">
                     ${c.name[0].toUpperCase()}
@@ -246,7 +285,7 @@ const App = {
                 </div>
                 <div class="contact-info">
                     <span class="name">${this.escapeHtml(c.name)}</span>
-                    <span class="last-msg">${lastMsg ? this.escapeHtml(lastMsg.text).slice(0, 30) : 'No messages yet'}</span>
+                    <span class="last-msg ${c.typing ? 'typing' : ''}">${statusText}</span>
                 </div>
             `;
             div.onclick = () => this.openChat(id);
@@ -287,8 +326,12 @@ const App = {
 
         this.$.chatAvatar.textContent = c.name[0].toUpperCase();
         this.$.chatName.textContent = c.name;
-        this.$.chatStatus.textContent = c.online ? 'Online' : 'Offline';
-        this.$.chatStatus.className = 'status' + (c.online ? ' online' : '');
+        this.updateChatStatus();
+
+        // Auto-reconnect if disconnected
+        if (!c.online && !this.rooms.has(contactId)) {
+            this.joinRoom(contactId);
+        }
 
         this.renderMessages();
         this.renderContacts();
@@ -308,22 +351,95 @@ const App = {
         if (!this.activeContact) return;
 
         const msgs = Storage.getMessages(this.activeContact);
-        for (const msg of msgs) {
-            this.renderMessage(msg);
+        for (let i = 0; i < msgs.length; i++) {
+            this.renderMessage(msgs[i], i);
         }
     },
 
-    renderMessage(msg) {
+    renderMessage(msg, index) {
         const div = document.createElement('div');
         div.className = `message ${msg.sent ? 'sent' : 'received'}`;
+        div.dataset.index = index;
+
+        let content = '';
+        if (msg.type === 'file') {
+            content = this.renderFileMessage(msg);
+        } else if (msg.type === 'voice') {
+            content = this.renderVoiceMessage(msg);
+        } else {
+            content = `<div class="text">${this.escapeHtml(msg.text)}</div>`;
+        }
+
         div.innerHTML = `
-            <div class="text">${this.escapeHtml(msg.text)}</div>
+            ${content}
             <div class="meta">
                 <span class="time">${new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             </div>
+            <button class="delete-btn" title="Delete message">🗑️</button>
         `;
+
+        // Bind delete button
+        const deleteBtn = div.querySelector('.delete-btn');
+        deleteBtn.onclick = () => this.deleteMessage(index);
+
         this.$.messages.appendChild(div);
         this.$.messages.scrollTop = this.$.messages.scrollHeight;
+    },
+
+    renderFileMessage(msg) {
+        const isImage = msg.mimeType?.startsWith('image/');
+        const icon = this.getFileIcon(msg.mimeType);
+        const sizeStr = this.formatFileSize(msg.size);
+
+        if (isImage && msg.blobUrl) {
+            return `
+                <div class="file-msg image-msg">
+                    <img src="${msg.blobUrl}" alt="${this.escapeHtml(msg.filename)}" onclick="window.open('${msg.blobUrl}')">
+                </div>
+            `;
+        }
+
+        return `
+            <div class="file-msg" onclick="${msg.blobUrl ? `window.open('${msg.blobUrl}')` : ''}">
+                <span class="file-icon">${icon}</span>
+                <div class="file-info">
+                    <span class="file-name">${this.escapeHtml(msg.filename)}</span>
+                    <span class="file-size">${sizeStr}</span>
+                </div>
+            </div>
+        `;
+    },
+
+    renderVoiceMessage(msg) {
+        const duration = msg.duration || 0;
+        const mins = Math.floor(duration / 60);
+        const secs = Math.floor(duration % 60).toString().padStart(2, '0');
+
+        return `
+            <div class="voice-note">
+                <button onclick="this.parentElement.querySelector('audio').play()" class="play-btn">▶</button>
+                <div class="waveform"><div class="progress"></div></div>
+                <span class="duration">${mins}:${secs}</span>
+                <audio src="${msg.blobUrl}" preload="metadata"></audio>
+            </div>
+        `;
+    },
+
+    getFileIcon(mimeType) {
+        if (!mimeType) return '📎';
+        if (mimeType.startsWith('image/')) return '🖼️';
+        if (mimeType.startsWith('video/')) return '🎬';
+        if (mimeType.startsWith('audio/')) return '🎵';
+        if (mimeType.includes('pdf')) return '📄';
+        if (mimeType.includes('zip') || mimeType.includes('rar')) return '📦';
+        return '📎';
+    },
+
+    formatFileSize(bytes) {
+        if (!bytes) return '';
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     },
 
     // --- P2P Connection ---
@@ -354,10 +470,24 @@ const App = {
         const [sendMsg, onMsg] = room.makeAction('msg');
         const [sendId, onId] = room.makeAction('id');
         const [sendCallEnd, onCallEnd] = room.makeAction('callEnd');
+        const [sendFile, onFile] = room.makeAction('file');
+        const [sendTyping, onTyping] = room.makeAction('typing');
 
         room._send = sendMsg;
         room._sendId = sendId;
         room._sendCallEnd = sendCallEnd;
+        room._sendFile = sendFile;
+        room._sendTyping = sendTyping;
+
+        // Handle typing indicator
+        onTyping((data, peerId) => {
+            this.handleTypingSignal(contactId, data.typing);
+        });
+
+        // Handle incoming file chunks
+        onFile(async (data, peerId) => {
+            await this.receiveFileChunk(contactId, data);
+        });
 
         // Handle call end from peer
         onCallEnd((data, peerId) => {
@@ -434,19 +564,18 @@ const App = {
         this.renderContacts();
 
         if (this.activeContact === contactId) {
-            this.$.chatStatus.textContent = 'Online';
-            this.$.chatStatus.className = 'status online';
+            this.updateChatStatus();
         }
     },
 
     handlePeerDisconnect(contactId) {
         this.contacts[contactId].online = false;
+        this.contacts[contactId].typing = false;
         this.sharedKeys.delete(contactId);
         this.renderContacts();
 
         if (this.activeContact === contactId) {
-            this.$.chatStatus.textContent = 'Offline';
-            this.$.chatStatus.className = 'status';
+            this.updateChatStatus();
         }
     },
 
@@ -698,8 +827,323 @@ const App = {
         this.$.modalCall.classList.add('hidden');
     },
 
+    // --- Typing Indicators ---
+    sendTypingSignal() {
+        if (!this.activeContact) return;
+
+        const room = this.rooms.get(this.activeContact);
+        if (!room?._sendTyping) return;
+
+        // Send typing=true
+        room._sendTyping({ typing: true });
+
+        // Clear previous timeout
+        if (this.typingTimeout) {
+            clearTimeout(this.typingTimeout);
+        }
+
+        // Auto-stop after 3 seconds
+        this.typingTimeout = setTimeout(() => {
+            room._sendTyping({ typing: false });
+        }, 3000);
+    },
+
+    handleTypingSignal(contactId, isTyping) {
+        this.contacts[contactId].typing = isTyping;
+
+        // Clear timeout for this contact
+        const timeout = this.typingTimeouts.get(contactId);
+        if (timeout) clearTimeout(timeout);
+
+        if (isTyping) {
+            // Auto-clear after 4 seconds
+            this.typingTimeouts.set(contactId, setTimeout(() => {
+                this.contacts[contactId].typing = false;
+                if (this.activeContact === contactId) {
+                    this.updateChatStatus();
+                }
+                this.renderContacts();
+            }, 4000));
+        }
+
+        if (this.activeContact === contactId) {
+            this.updateChatStatus();
+        }
+        this.renderContacts();
+    },
+
+    updateChatStatus() {
+        if (!this.activeContact) return;
+        const c = this.contacts[this.activeContact];
+
+        if (c.typing) {
+            this.$.chatStatus.textContent = 'typing...';
+            this.$.chatStatus.className = 'status typing';
+        } else if (c.online) {
+            this.$.chatStatus.textContent = 'Online';
+            this.$.chatStatus.className = 'status online';
+        } else {
+            this.$.chatStatus.textContent = 'Offline';
+            this.$.chatStatus.className = 'status';
+        }
+    },
+
+    // --- Disconnect/Reconnect ---
+    disconnectPeer() {
+        if (!this.activeContact) return;
+
+        const room = this.rooms.get(this.activeContact);
+        if (room) {
+            room.leave();
+            this.rooms.delete(this.activeContact);
+            this.sharedKeys.delete(this.activeContact);
+        }
+
+        this.contacts[this.activeContact].online = false;
+        this.$.chatStatus.textContent = 'Disconnected';
+        this.$.chatStatus.className = 'status';
+        this.renderContacts();
+
+        console.log(`[Disconnect] Disconnected from ${this.activeContact}`);
+    },
+
+    // --- Message Deletion ---
+    deleteMessage(index) {
+        if (!this.activeContact) return;
+
+        const success = Storage.deleteMessageByIndex(this.activeContact, index);
+        if (success) {
+            this.renderMessages();
+            this.renderContacts(); // Update last message preview
+            console.log(`[Delete] Removed message at index ${index}`);
+        }
+    },
+
+    // --- File Transfer ---
+    async handleFileSelect(e) {
+        const file = e.target.files[0];
+        if (!file || !this.activeContact) return;
+        e.target.value = ''; // Reset input
+
+        await this.sendFile(file);
+    },
+
+    async sendFile(file, isVoice = false) {
+        const room = this.rooms.get(this.activeContact);
+        if (!room?._sendFile) {
+            alert('Not connected to peer');
+            return;
+        }
+
+        const contact = this.contacts[this.activeContact];
+        if (!contact?.online) {
+            alert('Contact is offline');
+            return;
+        }
+
+        const fileId = crypto.randomUUID();
+        const arrayBuffer = await file.arrayBuffer();
+        const CHUNK_SIZE = 8192; // 8KB chunks (smaller for reliability)
+        const totalChunks = Math.ceil(arrayBuffer.byteLength / CHUNK_SIZE);
+
+        console.log(`[File] Sending: ${file.name} (${totalChunks} chunks, ${file.size} bytes)`);
+
+        // Send metadata first
+        room._sendFile({
+            type: 'meta',
+            fileId,
+            filename: file.name,
+            size: file.size,
+            mimeType: file.type,
+            totalChunks,
+            isVoice
+        });
+
+        // Small delay to ensure metadata arrives first
+        await this.delay(100);
+
+        // Send chunks with delays
+        for (let i = 0; i < totalChunks; i++) {
+            const start = i * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, arrayBuffer.byteLength);
+            const chunk = arrayBuffer.slice(start, end);
+
+            // Convert to base64 for reliable transfer
+            const base64 = this.arrayBufferToBase64(chunk);
+
+            room._sendFile({
+                type: 'chunk',
+                fileId,
+                index: i,
+                data: base64
+            });
+
+            // Small delay between chunks to prevent overwhelming the channel
+            if (i < totalChunks - 1) {
+                await this.delay(50);
+            }
+        }
+
+        // Delay before sending complete signal
+        await this.delay(100);
+        room._sendFile({ type: 'complete', fileId });
+
+        // Create local blob URL and save message
+        const blobUrl = URL.createObjectURL(file);
+        const msg = {
+            type: isVoice ? 'voice' : 'file',
+            filename: file.name,
+            size: file.size,
+            mimeType: file.type,
+            blobUrl,
+            time: Date.now(),
+            sent: true,
+            duration: isVoice ? this.lastRecordingDuration : undefined
+        };
+
+        Storage.saveMessage(this.activeContact, msg);
+        this.renderMessage(msg);
+        this.renderContacts();
+        console.log(`[File] Sent: ${file.name}`);
+    },
+
+    delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    },
+
+    arrayBufferToBase64(buffer) {
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
+    },
+
+    base64ToArrayBuffer(base64) {
+        const binary = atob(base64);
+        const buffer = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+            buffer[i] = binary.charCodeAt(i);
+        }
+        return buffer;
+    },
+
+    async receiveFileChunk(contactId, data) {
+        if (data.type === 'meta') {
+            // Initialize file reception
+            this.pendingFiles.set(data.fileId, {
+                chunks: new Array(data.totalChunks),
+                received: 0,
+                metadata: data
+            });
+            console.log(`[File] Receiving: ${data.filename} (${data.totalChunks} chunks)`);
+        } else if (data.type === 'chunk') {
+            const pending = this.pendingFiles.get(data.fileId);
+            if (!pending) return;
+
+            // Decode base64 chunk
+            pending.chunks[data.index] = this.base64ToArrayBuffer(data.data);
+            pending.received++;
+            console.log(`[File] Chunk ${data.index + 1}/${pending.metadata.totalChunks} received`);
+        } else if (data.type === 'complete') {
+            const pending = this.pendingFiles.get(data.fileId);
+            if (!pending) return;
+
+            // Reassemble file
+            const totalLength = pending.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+            const combined = new Uint8Array(totalLength);
+            let offset = 0;
+            for (const chunk of pending.chunks) {
+                combined.set(chunk, offset);
+                offset += chunk.length;
+            }
+
+            const blob = new Blob([combined], { type: pending.metadata.mimeType });
+            const blobUrl = URL.createObjectURL(blob);
+
+            const msg = {
+                type: pending.metadata.isVoice ? 'voice' : 'file',
+                filename: pending.metadata.filename,
+                size: pending.metadata.size,
+                mimeType: pending.metadata.mimeType,
+                blobUrl,
+                time: Date.now(),
+                sent: false
+            };
+
+            Storage.saveMessage(contactId, msg);
+            if (this.activeContact === contactId) {
+                this.renderMessage(msg);
+            }
+            this.renderContacts();
+
+            this.pendingFiles.delete(data.fileId);
+            console.log(`[File] Complete: ${pending.metadata.filename}`);
+        }
+    },
+
+    // --- Voice Notes ---
+    lastRecordingDuration: 0,
+
+    async toggleVoiceRecording() {
+        if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+            this.stopVoiceRecording();
+        } else {
+            await this.startVoiceRecording();
+        }
+    },
+
+    async startVoiceRecording() {
+        if (!this.activeContact) return;
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            this.mediaRecorder = new MediaRecorder(stream);
+            this.audioChunks = [];
+
+            this.mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) {
+                    this.audioChunks.push(e.data);
+                }
+            };
+
+            this.mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+                const file = new File([audioBlob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+                await this.sendFile(file, true);
+
+                // Cleanup
+                stream.getTracks().forEach(t => t.stop());
+                this.$.chatInputFooter.classList.remove('recording');
+                clearInterval(this.recordingInterval);
+            };
+
+            this.mediaRecorder.start();
+            this.recordingStartTime = Date.now();
+            this.$.chatInputFooter.classList.add('recording');
+
+            // Update timer
+            this.recordingInterval = setInterval(() => {
+                const elapsed = Math.floor((Date.now() - this.recordingStartTime) / 1000);
+                this.lastRecordingDuration = elapsed;
+            }, 100);
+
+        } catch (err) {
+            console.error('Voice recording error:', err);
+            alert('Could not access microphone');
+        }
+    },
+
+    stopVoiceRecording() {
+        if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+            this.mediaRecorder.stop();
+        }
+    },
+
     // --- Helpers ---
     escapeHtml(text) {
+        if (!text) return '';
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;

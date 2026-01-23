@@ -71,6 +71,17 @@ const Storage = {
         localStorage.setItem(this.MESSAGES_KEY, JSON.stringify(messages));
     },
 
+    deleteMessageByIndex(contactId, index) {
+        const all = localStorage.getItem(this.MESSAGES_KEY);
+        const messages = all ? JSON.parse(all) : {};
+        if (messages[contactId] && messages[contactId][index] !== undefined) {
+            messages[contactId].splice(index, 1);
+            localStorage.setItem(this.MESSAGES_KEY, JSON.stringify(messages));
+            return true;
+        }
+        return false;
+    },
+
     // Clear all (for debugging)
     clearAll() {
         localStorage.removeItem(this.IDENTITY_KEY);

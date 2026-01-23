@@ -324,6 +324,12 @@ body {
     color: var(--online);
 }
 
+.contact-info .status.typing,
+.last-msg.typing {
+    color: var(--accent);
+    font-style: italic;
+}
+
 .chat-actions {
     display: flex;
     gap: 8px;
@@ -384,6 +390,49 @@ body {
     align-self: center;
     margin: 8px 0;
 }
+
+/* Message Delete Button */
+.message {
+    position: relative;
+}
+
+.message .delete-btn {
+    position: absolute;
+    top: 4px;
+    right: -30px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--bg-hover);
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.message:hover .delete-btn {
+    display: flex;
+}
+
+.message .delete-btn:hover {
+    background: var(--danger);
+    color: white;
+    transform: scale(1.1);
+}
+
+/* Disconnected Contact */
+.contact-item.disconnected {
+    opacity: 0.6;
+}
+
+.contact-item.disconnected .status::before {
+    content: "🔌 ";
+}
+
 
 .chat-input {
     background: var(--bg-header);
@@ -575,9 +624,40 @@ body {
 }
 
 .file-msg img {
-    max-width: 200px;
-    max-height: 200px;
+    max-width: 250px;
+    max-height: 250px;
     border-radius: 8px;
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+.file-msg img:hover {
+    transform: scale(1.02);
+}
+
+.image-msg {
+    padding: 4px;
+    background: transparent;
+}
+
+/* Voice Note Play Button */
+.voice-note .play-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: none;
+    color: white;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-shrink: 0;
+    font-size: 14px;
+}
+
+.voice-note .play-btn:hover {
+    background: var(--accent-hover);
 }
 
 /* Modal */
