@@ -13,6 +13,7 @@ const App = {
     contacts: {}, // sessionId -> { name, publicKey, online }
     rooms: new Map(), // sessionId -> Trystero room
     sharedKeys: new Map(), // sessionId -> AES key
+    pendingMessages: new Map(), // sessionId -> [messages to send when online]
 
     // State
     activeContact: null,
@@ -358,8 +359,8 @@ const App = {
 
     renderMessage(msg, index) {
         const div = document.createElement('div');
-        div.className = `message ${msg.sent ? 'sent' : 'received'}`;
-        div.dataset.index = index;
+        div.className = `message ${msg.sent ? 'sent' : 'received'}${msg.pending ? ' pending' : ''}`;
+        div.dataset.index = index !== undefined ? index : '';
 
         let content = '';
         if (msg.type === 'file') {
@@ -566,6 +567,9 @@ const App = {
         if (this.activeContact === contactId) {
             this.updateChatStatus();
         }
+
+        // Flush pending messages for this contact
+        this.flushPendingMessages(contactId);
     },
 
     handlePeerDisconnect(contactId) {
@@ -601,28 +605,99 @@ const App = {
         const text = this.$.msgInput.value.trim();
         if (!text || !this.activeContact) return;
 
+        const contact = this.contacts[this.activeContact];
         const room = this.rooms.get(this.activeContact);
-        if (!room?._send) return;
+        const isOnline = contact?.online && room?._send;
 
         const msg = { text, time: Date.now() };
 
-        // Try to encrypt
-        const key = await this.ensureSharedKey(this.activeContact);
-        if (key) {
-            const encrypted = await Crypto.encrypt(key, JSON.stringify(msg));
-            room._send({ encrypted: true, ...encrypted });
-        } else {
-            room._send({ encrypted: false, ...msg });
-        }
-
-        // Save and display
-        const stored = { ...msg, sent: true };
+        // Save and display immediately
+        const stored = { ...msg, sent: true, pending: !isOnline };
         Storage.saveMessage(this.activeContact, stored);
-        this.renderMessage(stored);
+
+        const msgs = Storage.getMessages(this.activeContact);
+        this.renderMessage(stored, msgs.length - 1);
 
         this.$.msgInput.value = '';
         this.$.btnSend.disabled = true;
         this.renderContacts();
+
+        // If peer is online, send now
+        if (isOnline) {
+            const key = await this.ensureSharedKey(this.activeContact);
+            if (key) {
+                const encrypted = await Crypto.encrypt(key, JSON.stringify(msg));
+                room._send({ encrypted: true, ...encrypted });
+            } else {
+                room._send({ encrypted: false, ...msg });
+            }
+        } else {
+            // Queue for later
+            this.queueMessage(this.activeContact, msg);
+            console.log('[Queue] Message queued for offline peer');
+        }
+    },
+
+    queueMessage(contactId, msg) {
+        if (!this.pendingMessages.has(contactId)) {
+            this.pendingMessages.set(contactId, []);
+        }
+        this.pendingMessages.get(contactId).push(msg);
+    },
+
+    async flushPendingMessages(contactId) {
+        const pending = this.pendingMessages.get(contactId) || [];
+        if (pending.length === 0) return;
+
+        console.log(`[Queue] Flushing ${pending.length} pending messages`);
+
+        const room = this.rooms.get(contactId);
+        if (!room?._send) return;
+
+        // Wait for connection to stabilize
+        await this.delay(500);
+
+        const key = await this.ensureSharedKey(contactId);
+
+        for (const msg of pending) {
+            try {
+                if (key) {
+                    const encrypted = await Crypto.encrypt(key, JSON.stringify(msg));
+                    room._send({ encrypted: true, ...encrypted });
+                } else {
+                    room._send({ encrypted: false, ...msg });
+                }
+                console.log('[Queue] Sent:', msg.text?.slice(0, 20));
+                await this.delay(100);
+            } catch (err) {
+                console.error('[Queue] Failed:', err);
+            }
+        }
+
+        // Clear queue and update message status
+        this.pendingMessages.delete(contactId);
+        this.markMessagesAsSent(contactId);
+    },
+
+    markMessagesAsSent(contactId) {
+        const all = localStorage.getItem('p2p_messages');
+        const allMsgs = all ? JSON.parse(all) : {};
+        if (!allMsgs[contactId]) return;
+
+        let updated = false;
+        for (const msg of allMsgs[contactId]) {
+            if (msg.pending) {
+                delete msg.pending;
+                updated = true;
+            }
+        }
+
+        if (updated) {
+            localStorage.setItem('p2p_messages', JSON.stringify(allMsgs));
+            if (this.activeContact === contactId) {
+                this.renderMessages();
+            }
+        }
     },
 
     async receiveMessage(contactId, data) {
