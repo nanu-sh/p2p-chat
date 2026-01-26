@@ -2,6 +2,8 @@
 import { joinRoom, selfId } from 'https://esm.run/trystero/nostr';
 import Storage from './storage.js';
 import Crypto from './crypto.js';
+import MediaStore from './mediaStore.js';
+import { BotConnector } from './bot-connector.js';
 
 const APP_ID = 'p2p-chat-v1-secure';
 
@@ -45,6 +47,8 @@ const App = {
         this.cacheDom();
         this.bindEvents();
         this.initContextMenuListeners();
+        BotConnector.init();
+        await MediaStore.init();
 
         const saved = Storage.getIdentity();
         if (saved) {
@@ -256,6 +260,17 @@ const App = {
 
         this.renderContacts();
         this.connectToContacts();
+
+        // Ensure AI Contact exists
+        if (!this.contacts['ai-assistant']) {
+            this.contacts['ai-assistant'] = {
+                name: 'AI Assistant',
+                publicKey: null, // Virtual contact
+                online: true,    // Always online (local gateway)
+                isBot: true      // Flag
+            };
+            this.renderContacts();
+        }
     },
 
     copyId() {
@@ -397,13 +412,27 @@ const App = {
         this.renderContacts();
     },
 
-    renderMessages() {
+    async renderMessages() {
         this.$.messages.innerHTML = '';
         if (!this.activeContact) return;
 
         const msgs = Storage.getMessages(this.activeContact);
         for (let i = 0; i < msgs.length; i++) {
-            this.renderMessage(msgs[i], i);
+            const msg = msgs[i];
+
+            // Restore blob URL from IndexedDB if missing
+            if (msg.mediaId && !msg.blobUrl) {
+                try {
+                    const file = await MediaStore.getFile(msg.mediaId);
+                    if (file) {
+                        msg.blobUrl = file.blobUrl;
+                    }
+                } catch (err) {
+                    console.warn('[Media] Could not restore file:', msg.mediaId);
+                }
+            }
+
+            this.renderMessage(msg, i);
         }
     },
 
@@ -520,7 +549,26 @@ const App = {
         const roomId = await this.getRoomId(contactId);
         console.log(`[Room] Joining ${roomId} for contact ${contactId}`);
 
-        const room = joinRoom({ appId: APP_ID }, roomId);
+        // WebRTC Configuration (STUN/TURN)
+        const rtcConfig = {
+            iceServers: [
+                // Public Google STUN servers
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun3.l.google.com:19302' },
+                { urls: 'stun:stun4.l.google.com:19302' },
+            ]
+        };
+
+        // If you have a TURN server (recommended for production), add it like this:
+        // rtcConfig.iceServers.push({
+        //     urls: 'turn:your-turn-server.com:3478',
+        //     username: 'user',
+        //     credential: 'password'
+        // });
+
+        const room = joinRoom({ appId: APP_ID, rtcConfig }, roomId);
         this.rooms.set(contactId, room);
 
         // Actions
@@ -743,6 +791,12 @@ const App = {
         this.$.msgInput.value = '';
         this.$.btnSend.disabled = true;
         this.renderContacts();
+
+        // If AI Chat, route to Gateway
+        if (this.activeContact === 'ai-assistant') {
+            BotConnector.sendToGateway(text);
+            return;
+        }
 
         // If peer is online, send now
         if (isOnline) {
@@ -1268,13 +1322,21 @@ const App = {
         await this.delay(100);
         room._sendFile({ type: 'complete', fileId });
 
-        // Create local blob URL and save message
+        // Save file to IndexedDB for persistence
+        const mediaId = MediaStore.generateId();
+        await MediaStore.saveFile(mediaId, file, {
+            mimeType: file.type,
+            filename: file.name
+        });
+
+        // Create blob URL for current session
         const blobUrl = URL.createObjectURL(file);
         const msg = {
             type: isVoice ? 'voice' : 'file',
             filename: file.name,
             size: file.size,
             mimeType: file.type,
+            mediaId, // Store mediaId for persistence
             blobUrl,
             time: Date.now(),
             sent: true,
@@ -1340,6 +1402,14 @@ const App = {
             }
 
             const blob = new Blob([combined], { type: pending.metadata.mimeType });
+
+            // Save to IndexedDB for persistence
+            const mediaId = MediaStore.generateId();
+            await MediaStore.saveFile(mediaId, blob, {
+                mimeType: pending.metadata.mimeType,
+                filename: pending.metadata.filename
+            });
+
             const blobUrl = URL.createObjectURL(blob);
 
             const msg = {
@@ -1347,6 +1417,7 @@ const App = {
                 filename: pending.metadata.filename,
                 size: pending.metadata.size,
                 mimeType: pending.metadata.mimeType,
+                mediaId, // Store mediaId for persistence
                 blobUrl,
                 time: Date.now(),
                 sent: false
@@ -1749,8 +1820,36 @@ const App = {
                 this.hideContextMenu();
             }
         });
+    },
+
+    async receiveAiMessage(text) {
+        const contactId = 'ai-assistant';
+        const msgId = crypto.randomUUID();
+
+        const msg = {
+            id: msgId,
+            text,
+            time: Date.now(),
+            sent: false,
+            pending: false,
+            delivered: true,
+            read: false
+        };
+
+        Storage.saveMessage(contactId, msg);
+
+        if (this.activeContact === contactId) {
+            const msgs = Storage.getMessages(contactId);
+            this.renderMessage(msg, msgs.length - 1);
+        } else {
+            // Show unread indicator?
+            this.renderContacts();
+        }
     }
 };
 
 // Start
-document.addEventListener('DOMContentLoaded', () => App.init());
+document.addEventListener('DOMContentLoaded', () => {
+    window.App = App;
+    App.init();
+});
