@@ -32,6 +32,10 @@ body {
     font-size: 14px;
     background: var(--bg-app);
     color: var(--text);
+    /* Prevent text selection on mobile for cleaner UX */
+    -webkit-tap-highlight-color: transparent;
+    /* Smooth scrolling */
+    scroll-behavior: smooth;
 }
 
 .screen {
@@ -206,12 +210,16 @@ body {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 12px 16px;
+    padding: 14px 16px;
     cursor: pointer;
     border-bottom: 1px solid var(--border);
+    transition: background 0.15s ease;
+    /* Better touch target */
+    min-height: 72px;
 }
 
-.contact-item:hover {
+.contact-item:hover,
+.contact-item:active {
     background: var(--bg-hover);
 }
 
@@ -252,6 +260,34 @@ body {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.contact-item .last-msg.typing {
+    color: var(--accent);
+    font-style: italic;
+}
+
+/* Typing animation dots */
+.contact-item .last-msg.typing::after {
+    content: '';
+    animation: typingDots 1.4s infinite;
+}
+
+@keyframes typingDots {
+
+    0%,
+    20% {
+        content: '.';
+    }
+
+    40% {
+        content: '..';
+    }
+
+    60%,
+    100% {
+        content: '...';
+    }
 }
 
 .empty-contacts {
@@ -345,22 +381,23 @@ body {
 }
 
 .message {
-    max-width: 65%;
-    padding: 8px 12px;
-    border-radius: 8px;
+    max-width: 75%;
+    padding: 10px 14px;
+    border-radius: 16px;
     position: relative;
+    transition: transform 0.1s ease;
 }
 
 .message.sent {
     align-self: flex-end;
     background: var(--sent-bg);
-    border-top-right-radius: 0;
+    border-bottom-right-radius: 4px;
 }
 
 .message.received {
     align-self: flex-start;
     background: var(--received-bg);
-    border-top-left-radius: 0;
+    border-bottom-left-radius: 4px;
 }
 
 .message .text {
@@ -460,11 +497,13 @@ body {
     flex: 1;
     background: var(--bg-input);
     border: none;
-    border-radius: 8px;
-    padding: 12px 16px;
+    border-radius: 24px;
+    padding: 12px 18px;
     color: var(--text);
-    font-size: 15px;
+    font-size: 16px;
     outline: none;
+    /* Prevent zoom on iOS */
+    touch-action: manipulation;
 }
 
 .chat-input button#btn-send {
@@ -490,8 +529,10 @@ body {
     cursor: not-allowed;
 }
 
-.chat-input button#btn-send:not(:disabled):hover {
+.chat-input button#btn-send:not(:disabled):hover,
+.chat-input button#btn-send:not(:disabled):active {
     background: var(--accent-hover);
+    transform: scale(1.05);
 }
 
 .chat-input .icon-btn {
@@ -878,6 +919,34 @@ button.danger {
     }
 
     #messages {
-        padding: 16px;
+        padding: 12px;
+    }
+
+    /* Safe area padding for notched phones */
+    .chat-input {
+        padding-bottom: max(10px, env(safe-area-inset-bottom));
+    }
+
+    .sidebar-header {
+        padding-top: max(16px, env(safe-area-inset-top));
+    }
+
+    .chat-header {
+        padding-top: max(8px, env(safe-area-inset-top));
+    }
+
+    /* Larger touch targets on mobile */
+    .icon-btn {
+        width: 44px;
+        height: 44px;
+    }
+
+    .message {
+        max-width: 85%;
+    }
+
+    /* Prevent horizontal scroll */
+    body {
+        overflow-x: hidden;
     }
 }
