@@ -3,7 +3,6 @@ import { joinRoom, selfId } from 'https://esm.run/trystero/nostr';
 import Storage from './storage.js';
 import Crypto from './crypto.js';
 import MediaStore from './mediaStore.js';
-import { BotConnector } from './bot-connector.js';
 
 const APP_ID = 'p2p-chat-v1-secure';
 
@@ -47,7 +46,6 @@ const App = {
         this.cacheDom();
         this.bindEvents();
         this.initContextMenuListeners();
-        BotConnector.init();
         await MediaStore.init();
 
         const saved = Storage.getIdentity();
@@ -260,17 +258,6 @@ const App = {
 
         this.renderContacts();
         this.connectToContacts();
-
-        // Ensure AI Contact exists
-        if (!this.contacts['ai-assistant']) {
-            this.contacts['ai-assistant'] = {
-                name: 'AI Assistant',
-                publicKey: null, // Virtual contact
-                online: true,    // Always online (local gateway)
-                isBot: true      // Flag
-            };
-            this.renderContacts();
-        }
     },
 
     copyId() {
@@ -556,17 +543,25 @@ const App = {
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
                 { urls: 'stun:stun2.l.google.com:19302' },
-                { urls: 'stun:stun3.l.google.com:19302' },
-                { urls: 'stun:stun4.l.google.com:19302' },
+
+                // Free TURN servers from OpenRelay (community project)
+                {
+                    urls: 'turn:openrelay.metered.ca:80',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
             ]
         };
-
-        // If you have a TURN server (recommended for production), add it like this:
-        // rtcConfig.iceServers.push({
-        //     urls: 'turn:your-turn-server.com:3478',
-        //     username: 'user',
-        //     credential: 'password'
-        // });
 
         const room = joinRoom({ appId: APP_ID, rtcConfig }, roomId);
         this.rooms.set(contactId, room);
@@ -791,12 +786,6 @@ const App = {
         this.$.msgInput.value = '';
         this.$.btnSend.disabled = true;
         this.renderContacts();
-
-        // If AI Chat, route to Gateway
-        if (this.activeContact === 'ai-assistant') {
-            BotConnector.sendToGateway(text);
-            return;
-        }
 
         // If peer is online, send now
         if (isOnline) {
@@ -1820,31 +1809,6 @@ const App = {
                 this.hideContextMenu();
             }
         });
-    },
-
-    async receiveAiMessage(text) {
-        const contactId = 'ai-assistant';
-        const msgId = crypto.randomUUID();
-
-        const msg = {
-            id: msgId,
-            text,
-            time: Date.now(),
-            sent: false,
-            pending: false,
-            delivered: true,
-            read: false
-        };
-
-        Storage.saveMessage(contactId, msg);
-
-        if (this.activeContact === contactId) {
-            const msgs = Storage.getMessages(contactId);
-            this.renderMessage(msg, msgs.length - 1);
-        } else {
-            // Show unread indicator?
-            this.renderContacts();
-        }
     }
 };
 
