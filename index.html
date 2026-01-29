@@ -69,8 +69,6 @@
                         <div class="avatar" id="chat-avatar" aria-hidden="true">?</div>
                         <div class="contact-info">
                             <span class="name" id="chat-name">Contact</span>
-                            <span id="trust-badge" class="trust-badge" role="button" tabindex="0"
-                                title="Click to view safety number"></span>
                             <span class="status" id="chat-status" aria-live="polite">Offline</span>
                         </div>
                     </div>
@@ -97,22 +95,6 @@
                         </button>
                     </div>
                 </header>
-
-                <!-- Key Changed Banner -->
-                <div id="key-changed-banner" class="key-changed-banner hidden" role="alert">
-                    <div class="banner-content">
-                        <span class="banner-icon" aria-hidden="true">🔴</span>
-                        <div class="banner-text">
-                            <strong>Security key changed</strong>
-                            <p>This could be a new device OR an attack. Verify before proceeding.</p>
-                        </div>
-                    </div>
-                    <div class="banner-actions">
-                        <button id="btn-reject-key" class="btn-reject">Reject & Disconnect</button>
-                        <button id="btn-accept-key" class="btn-accept">Accept New Key</button>
-                    </div>
-                </div>
-
                 <div id="messages" role="log" aria-live="polite" aria-label="Chat messages"></div>
                 <footer class="chat-input">
                     <button id="btn-attach" class="icon-btn" title="Attach File" aria-label="Attach a file">
@@ -156,27 +138,6 @@
                 <button id="btn-cancel" class="secondary" aria-label="Cancel adding contact">Cancel</button>
                 <button id="btn-save" aria-label="Add contact">Add</button>
             </div>
-        </div>
-    </div>
-
-    <!-- Fingerprint Modal -->
-    <div id="modal-fingerprint" class="modal hidden" role="dialog" aria-modal="true"
-        aria-labelledby="fingerprint-title">
-        <div class="modal-content fingerprint-modal">
-            <h2 id="fingerprint-title">Safety Number</h2>
-            <p class="fingerprint-help">Compare this number with your contact to verify their identity.</p>
-            <div id="fingerprint-display" class="fingerprint" aria-label="Safety number"></div>
-            <div class="fingerprint-labels">
-                <span>Your fingerprint:</span>
-                <div id="my-fingerprint" class="fingerprint small"></div>
-                <span>Their fingerprint:</span>
-                <div id="their-fingerprint" class="fingerprint small"></div>
-            </div>
-            <div class="modal-actions">
-                <button id="btn-copy-fingerprint" class="secondary">Copy</button>
-                <button id="btn-verify-contact">Mark as Verified ✓</button>
-            </div>
-            <button id="btn-close-fingerprint" class="close-btn" aria-label="Close">&times;</button>
         </div>
     </div>
 

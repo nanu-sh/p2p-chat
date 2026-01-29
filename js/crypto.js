@@ -43,19 +43,6 @@ const Crypto = {
         return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
     },
 
-    // Generate safety number fingerprint from public key (first 20 bytes of SHA-256)
-    // Format: "12345 67890 12345 67890 12345 67890 12345 67890"
-    async generateFingerprint(publicKey) {
-        const raw = await crypto.subtle.exportKey('raw', publicKey);
-        const hash = await crypto.subtle.digest('SHA-256', raw);
-        const bytes = new Uint8Array(hash.slice(0, 20));
-        return Array.from(bytes)
-            .map(b => b.toString(10).padStart(3, '0'))
-            .join('')
-            .match(/.{5}/g)
-            .join(' ');
-    },
-
     // Derive shared AES key from ECDH
     async deriveSharedKey(privateKey, publicKey) {
         const sharedBits = await crypto.subtle.deriveBits(

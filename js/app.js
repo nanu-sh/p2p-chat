@@ -94,20 +94,6 @@ const App = {
             btnVoice: document.getElementById('btn-voice'),
             btnDisconnect: document.getElementById('btn-disconnect'),
             chatInputFooter: document.querySelector('.chat-input'),
-            chatHeader: document.querySelector('.chat-header'),
-            // Trust UI
-            trustBadge: document.getElementById('trust-badge'),
-            keyChangedBanner: document.getElementById('key-changed-banner'),
-            btnRejectKey: document.getElementById('btn-reject-key'),
-            btnAcceptKey: document.getElementById('btn-accept-key'),
-            // Fingerprint modal
-            modalFingerprint: document.getElementById('modal-fingerprint'),
-            fingerprintDisplay: document.getElementById('fingerprint-display'),
-            myFingerprint: document.getElementById('my-fingerprint'),
-            theirFingerprint: document.getElementById('their-fingerprint'),
-            btnCopyFingerprint: document.getElementById('btn-copy-fingerprint'),
-            btnVerifyContact: document.getElementById('btn-verify-contact'),
-            btnCloseFingerprint: document.getElementById('btn-close-fingerprint'),
         };
     },
 
@@ -177,17 +163,6 @@ const App = {
         // Click outside modal to close
         this.$.modalAdd.onclick = (e) => {
             if (e.target === this.$.modalAdd) this.hideModal('add');
-        };
-
-        // Trust UI events
-        this.$.trustBadge.onclick = () => this.showFingerprintModal();
-        this.$.btnRejectKey.onclick = () => this.rejectNewKey();
-        this.$.btnAcceptKey.onclick = () => this.acceptNewKey();
-        this.$.btnCloseFingerprint.onclick = () => this.hideModal('fingerprint');
-        this.$.btnCopyFingerprint.onclick = () => this.copyFingerprint();
-        this.$.btnVerifyContact.onclick = () => this.verifyContact();
-        this.$.modalFingerprint.onclick = (e) => {
-            if (e.target === this.$.modalFingerprint) this.hideModal('fingerprint');
         };
     },
 
@@ -368,7 +343,6 @@ const App = {
         this.$.chatAvatar.textContent = c.name[0].toUpperCase();
         this.$.chatName.textContent = c.name;
         this.updateChatStatus();
-        this.updateTrustUI();
 
         // Auto-reconnect if disconnected
         if (!c.online && !this.rooms.has(contactId)) {
@@ -636,63 +610,13 @@ const App = {
             this.handlePeerDisconnect(contactId);
         });
 
-        // Receive identity - TOFU key-change detection
+        // Receive identity
         onId(async (data, peerId) => {
             console.log('[Room] Got identity:', data);
             if (data.id === contactId && data.publicKey) {
-                const stored = this.contacts[contactId];
-
-                try {
-                    const peerPub = await Crypto.importPublicKey(data.publicKey);
-                    const fingerprint = await Crypto.generateFingerprint(peerPub);
-
-                    // Check for key change
-                    if (stored.keyFingerprint && stored.keyFingerprint !== fingerprint) {
-                        // KEY CHANGED - do NOT auto-replace, block until user decides
-                        console.warn('[Security] Key changed for', contactId);
-                        stored.keyChanged = true;
-                        stored.verified = false;
-                        stored.pendingNewKey = data.publicKey;
-                        stored.pendingFingerprint = fingerprint;
-
-                        Storage.updateContact(contactId, {
-                            keyChanged: true,
-                            verified: false
-                        });
-
-                        if (this.activeContact === contactId) {
-                            this.updateTrustUI();
-                        }
-                        this.renderContacts();
-                        return; // Don't update key or derive shared key
-                    }
-
-                    // First connect - TOFU pin the fingerprint
-                    if (!stored.keyFingerprint) {
-                        console.log('[Security] TOFU: Pinning fingerprint for', contactId);
-                        stored.keyFingerprint = fingerprint;
-                    }
-
-                    // Update contact
-                    stored.publicKey = data.publicKey;
-                    stored.lastSeen = Date.now();
-                    stored.keyChanged = false;
-
-                    Storage.updateContact(contactId, {
-                        publicKey: data.publicKey,
-                        keyFingerprint: stored.keyFingerprint,
-                        lastSeen: stored.lastSeen,
-                        keyChanged: false
-                    });
-
-                    await this.ensureSharedKey(contactId);
-
-                    if (this.activeContact === contactId) {
-                        this.updateTrustUI();
-                    }
-                } catch (err) {
-                    console.error('[Security] Key processing error:', err);
-                }
+                this.contacts[contactId].publicKey = data.publicKey;
+                Storage.updateContact(contactId, { publicKey: data.publicKey });
+                await this.ensureSharedKey(contactId);
             }
         });
 
@@ -1267,7 +1191,7 @@ const App = {
         // Small delay to ensure metadata arrives first
         await this.delay(100);
 
-        // Send chunks with backpressure
+        // Send chunks with delays
         for (let i = 0; i < totalChunks; i++) {
             const start = i * CHUNK_SIZE;
             const end = Math.min(start + CHUNK_SIZE, arrayBuffer.byteLength);
@@ -1276,18 +1200,6 @@ const App = {
             // Convert to base64 for reliable transfer
             const base64 = this.arrayBufferToBase64(chunk);
 
-            // Backpressure: wait if buffer is too full
-            const dc = room._channel;
-            if (dc && dc.bufferedAmount > 65536) {
-                await new Promise(resolve => {
-                    const check = () => {
-                        if (!dc || dc.bufferedAmount < 32768) resolve();
-                        else setTimeout(check, 50);
-                    };
-                    check();
-                });
-            }
-
             room._sendFile({
                 type: 'chunk',
                 fileId,
@@ -1295,9 +1207,9 @@ const App = {
                 data: base64
             });
 
-            // Small delay between chunks
+            // Small delay between chunks to prevent overwhelming the channel
             if (i < totalChunks - 1) {
-                await this.delay(20);
+                await this.delay(50);
             }
         }
 
@@ -1481,179 +1393,6 @@ const App = {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
-    },
-
-    // --- Trust UI ---
-    updateTrustUI() {
-        if (!this.activeContact) return;
-        const contact = this.contacts[this.activeContact];
-
-        // Update trust badge
-        this.$.trustBadge.className = 'trust-badge';
-        if (contact.keyChanged) {
-            this.$.trustBadge.classList.add('key-changed');
-        } else if (contact.verified) {
-            this.$.trustBadge.classList.add('verified');
-        } else {
-            this.$.trustBadge.classList.add('unverified');
-        }
-
-        // Show/hide key changed banner
-        if (contact.keyChanged) {
-            this.$.keyChangedBanner.classList.remove('hidden');
-            this.$.chatInputFooter.classList.add('blocked');
-            this.$.chatHeader.classList.add('blocked');
-        } else {
-            this.$.keyChangedBanner.classList.add('hidden');
-            this.$.chatInputFooter.classList.remove('blocked');
-            this.$.chatHeader.classList.remove('blocked');
-        }
-    },
-
-    async showFingerprintModal() {
-        if (!this.activeContact) return;
-        const contact = this.contacts[this.activeContact];
-
-        // Get my fingerprint
-        const myFingerprint = await Crypto.generateFingerprint(this.me.publicKey);
-        this.$.myFingerprint.textContent = myFingerprint;
-
-        // Get their fingerprint (use pending if key changed)
-        const theirFingerprint = contact.pendingFingerprint || contact.keyFingerprint || 'Not available';
-        this.$.theirFingerprint.textContent = theirFingerprint;
-
-        // Combined display
-        this.$.fingerprintDisplay.textContent = theirFingerprint;
-
-        // Update verify button state
-        this.$.btnVerifyContact.disabled = contact.keyChanged || contact.verified;
-        if (contact.verified) {
-            this.$.btnVerifyContact.textContent = 'Already Verified ✓';
-        } else if (contact.keyChanged) {
-            this.$.btnVerifyContact.textContent = 'Resolve key change first';
-        } else {
-            this.$.btnVerifyContact.textContent = 'Mark as Verified ✓';
-        }
-
-        this.$.modalFingerprint.classList.remove('hidden');
-    },
-
-    async acceptNewKey() {
-        if (!this.activeContact) return;
-        const contact = this.contacts[this.activeContact];
-        if (!contact.pendingNewKey) return;
-
-        // Require confirmation
-        if (!confirm('Are you sure you want to accept the new security key?\n\nOnly do this if you know this person changed devices.')) {
-            return;
-        }
-
-        console.log('[Security] User accepted new key for', this.activeContact);
-
-        // Update to new key
-        contact.publicKey = contact.pendingNewKey;
-        contact.keyFingerprint = contact.pendingFingerprint;
-        contact.keyChanged = false;
-        contact.verified = false; // Must re-verify
-        delete contact.pendingNewKey;
-        delete contact.pendingFingerprint;
-
-        Storage.updateContact(this.activeContact, {
-            publicKey: contact.publicKey,
-            keyFingerprint: contact.keyFingerprint,
-            keyChanged: false,
-            verified: false
-        });
-
-        // Re-derive shared key
-        this.sharedKeys.delete(this.activeContact);
-        await this.ensureSharedKey(this.activeContact);
-
-        this.updateTrustUI();
-        this.renderContacts();
-    },
-
-    rejectNewKey() {
-        if (!this.activeContact) return;
-
-        console.log('[Security] User rejected new key - disconnecting');
-        this.disconnectPeer();
-
-        // Clear pending key data
-        const contact = this.contacts[this.activeContact];
-        delete contact.pendingNewKey;
-        delete contact.pendingFingerprint;
-    },
-
-    verifyContact() {
-        if (!this.activeContact) return;
-        const contact = this.contacts[this.activeContact];
-
-        if (contact.keyChanged) {
-            alert('Please resolve the key change first.');
-            return;
-        }
-
-        contact.verified = true;
-        Storage.updateContact(this.activeContact, { verified: true });
-
-        this.updateTrustUI();
-        this.hideModal('fingerprint');
-        this.renderContacts();
-    },
-
-    copyFingerprint() {
-        const text = this.$.fingerprintDisplay.textContent;
-        navigator.clipboard.writeText(text).then(() => {
-            const btn = this.$.btnCopyFingerprint;
-            const original = btn.textContent;
-            btn.textContent = 'Copied!';
-            setTimeout(() => btn.textContent = original, 1500);
-        });
-    },
-
-    // --- Clean Reconnect ---
-    async reconnectPeer() {
-        if (!this.activeContact) return;
-        const contactId = this.activeContact;
-
-        console.log('[Reconnect] Starting clean reconnect for', contactId);
-
-        // 1. Leave room completely
-        const room = this.rooms.get(contactId);
-        if (room) {
-            room.leave();
-            this.rooms.delete(contactId);
-        }
-
-        // 2. Clear derived key
-        this.sharedKeys.delete(contactId);
-
-        // 3. Reset transient UI state
-        this.contacts[contactId].online = false;
-        this.contacts[contactId].typing = false;
-
-        // 4. Clear typing timeouts
-        const timeout = this.typingTimeouts.get(contactId);
-        if (timeout) {
-            clearTimeout(timeout);
-            this.typingTimeouts.delete(contactId);
-        }
-
-        // 5. Clear pending file transfers for this contact
-        for (const [fileId, pending] of this.pendingFiles) {
-            this.pendingFiles.delete(fileId);
-        }
-
-        // 6. Update UI
-        this.updateChatStatus();
-        this.renderContacts();
-
-        // 7. Wait and rejoin fresh
-        await this.delay(500);
-        await this.joinRoom(contactId);
-
-        console.log('[Reconnect] Rejoined room for', contactId);
     }
 };
 

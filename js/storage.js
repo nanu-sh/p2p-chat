@@ -28,15 +28,7 @@ const Storage = {
 
     addContact(sessionId, name) {
         const contacts = this.getContacts();
-        contacts[sessionId] = {
-            name,
-            publicKey: null,
-            keyFingerprint: null,
-            verified: false,
-            keyChanged: false,
-            lastSeen: null,
-            addedAt: Date.now()
-        };
+        contacts[sessionId] = { name, publicKey: null, addedAt: Date.now() };
         this.saveContacts(contacts);
         return contacts[sessionId];
     },
