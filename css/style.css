@@ -410,13 +410,7 @@ body {
     margin-left: 2px;
 }
 
-/* Delivered = double gray tick */
 .message .tick.delivered {
-    color: rgba(255, 255, 255, 0.6);
-}
-
-/* Read = double blue tick */
-.message .tick.read {
     color: #53bdeb;
 }
 
@@ -424,8 +418,7 @@ body {
     content: "✓";
 }
 
-.message.sent .tick.delivered::before,
-.message.sent .tick.read::before {
+.message.sent .tick.delivered::before {
     content: "✓✓";
 }
 
