@@ -582,9 +582,22 @@ const App = {
         onId(async (data, peerId) => {
             console.log('[Room] Got identity:', data);
             if (data.id === contactId && data.publicKey) {
+                // Update contact with peer's actual name and public key
                 this.contacts[contactId].publicKey = data.publicKey;
-                Storage.updateContact(contactId, { publicKey: data.publicKey });
+                if (data.name) {
+                    this.contacts[contactId].name = data.name;
+                }
+                Storage.updateContact(contactId, {
+                    publicKey: data.publicKey,
+                    name: data.name || this.contacts[contactId].name
+                });
                 await this.ensureSharedKey(contactId);
+
+                // Refresh UI to show updated name
+                this.renderContacts();
+                if (this.activeContact === contactId) {
+                    this.$.chatName.textContent = data.name || this.contacts[contactId].name;
+                }
             }
         });
 
