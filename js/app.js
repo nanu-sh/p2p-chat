@@ -151,19 +151,6 @@ const App = {
 
         // Disconnect
         this.$.btnDisconnect.onclick = () => this.disconnectPeer();
-
-        // ESC to close modals
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                this.hideModal('add');
-                this.hideModal('call');
-            }
-        });
-
-        // Click outside modal to close
-        this.$.modalAdd.onclick = (e) => {
-            if (e.target === this.$.modalAdd) this.hideModal('add');
-        };
     },
 
     // --- Setup ---
@@ -390,7 +377,6 @@ const App = {
         const div = document.createElement('div');
         div.className = `message ${msg.sent ? 'sent' : 'received'}${msg.pending ? ' pending' : ''}`;
         div.dataset.index = index !== undefined ? index : '';
-        if (msg.id) div.dataset.msgId = msg.id;
 
         let content = '';
         if (msg.type === 'file') {
@@ -401,16 +387,12 @@ const App = {
             content = `<div class="text">${this.escapeHtml(msg.text)}</div>`;
         }
 
-        // Only show ticks for sent messages
-        const tickHtml = msg.sent ? `<span class="tick${msg.delivered ? ' delivered' : ''}"></span>` : '';
-
         div.innerHTML = `
             ${content}
             <div class="meta">
                 <span class="time">${new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                ${tickHtml}
             </div>
-            <button class="delete-btn" title="Delete message" aria-label="Delete this message">🗑️</button>
+            <button class="delete-btn" title="Delete message">🗑️</button>
         `;
 
         // Bind delete button
@@ -534,19 +516,12 @@ const App = {
         const [sendCallEnd, onCallEnd] = room.makeAction('callEnd');
         const [sendFile, onFile] = room.makeAction('file');
         const [sendTyping, onTyping] = room.makeAction('typing');
-        const [sendAck, onAck] = room.makeAction('ack');
 
         room._send = sendMsg;
         room._sendId = sendId;
         room._sendCallEnd = sendCallEnd;
         room._sendFile = sendFile;
         room._sendTyping = sendTyping;
-        room._sendAck = sendAck;
-
-        // Handle message ACK (delivery confirmation)
-        onAck((data, peerId) => {
-            this.handleAck(contactId, data.id);
-        });
 
         // Handle typing indicator
         onTyping((data, peerId) => {
@@ -677,12 +652,10 @@ const App = {
         const room = this.rooms.get(this.activeContact);
         const isOnline = contact?.online && room?._send;
 
-        // Generate unique message ID for delivery tracking
-        const msgId = crypto.randomUUID();
-        const msg = { id: msgId, text, time: Date.now() };
+        const msg = { text, time: Date.now() };
 
         // Save and display immediately
-        const stored = { ...msg, sent: true, pending: !isOnline, delivered: false };
+        const stored = { ...msg, sent: true, pending: !isOnline };
         Storage.saveMessage(this.activeContact, stored);
 
         const msgs = Storage.getMessages(this.activeContact);
@@ -782,47 +755,16 @@ const App = {
             const decrypted = await Crypto.decrypt(key, { iv: data.iv, data: data.data });
             msg = JSON.parse(decrypted);
         } else {
-            msg = { id: data.id, text: data.text, time: data.time };
+            msg = { text: data.text, time: data.time };
         }
 
         const stored = { ...msg, sent: false };
         Storage.saveMessage(contactId, stored);
 
-        // Send ACK back to sender
-        const room = this.rooms.get(contactId);
-        if (room?._sendAck && msg.id) {
-            room._sendAck({ id: msg.id });
-            console.log('[ACK] Sent for message', msg.id);
-        }
-
         if (this.activeContact === contactId) {
-            const msgs = Storage.getMessages(contactId);
-            this.renderMessage(stored, msgs.length - 1);
+            this.renderMessage(stored);
         }
         this.renderContacts();
-    },
-
-    handleAck(contactId, msgId) {
-        const all = localStorage.getItem('p2p_messages');
-        const allMsgs = all ? JSON.parse(all) : {};
-        if (!allMsgs[contactId]) return;
-
-        let updated = false;
-        for (const msg of allMsgs[contactId]) {
-            if (msg.id === msgId && !msg.delivered) {
-                msg.delivered = true;
-                updated = true;
-                console.log('[ACK] Message delivered:', msgId);
-                break;
-            }
-        }
-
-        if (updated) {
-            localStorage.setItem('p2p_messages', JSON.stringify(allMsgs));
-            if (this.activeContact === contactId) {
-                this.renderMessages();
-            }
-        }
     },
 
     // --- Voice Call ---
