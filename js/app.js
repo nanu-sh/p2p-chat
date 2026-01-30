@@ -6,7 +6,14 @@ import MediaStore from './mediaStore.js';
 
 const APP_ID = 'p2p-chat-v1-secure';
 
+// Metered TURN configuration
+// SECURITY: Set "Allowed Origins" in your Metered dashboard to restrict usage to your domain only
+const METERED_DOMAIN = 'nanu.metered.live';
+const METERED_API_KEY = 'mNiwiOPXP96SEeCaIjCPVddBtdFHJudcZQji_DosjTMoZQpW';
+
 const App = {
+    // TURN credentials (fetched dynamically)
+    turnCredentials: null,
     // Identity
     me: null, // { id, name, publicKey, privateKey, publicKeyJwk }
 
@@ -480,37 +487,48 @@ const App = {
         return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 24);
     },
 
+    async fetchTurnCredentials() {
+        // Return cached credentials if still fresh (cache for 1 hour)
+        if (this.turnCredentials && Date.now() - this.turnCredentialsTime < 3600000) {
+            return this.turnCredentials;
+        }
+
+        try {
+            const response = await fetch(
+                `https://${METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`
+            );
+            if (!response.ok) throw new Error('Failed to fetch TURN credentials');
+
+            this.turnCredentials = await response.json();
+            this.turnCredentialsTime = Date.now();
+            console.log('[TURN] Fetched fresh credentials');
+            return this.turnCredentials;
+        } catch (err) {
+            console.error('[TURN] Failed to fetch credentials:', err);
+            // Fallback to STUN only
+            return [];
+        }
+    },
+
     async joinRoom(contactId) {
         if (this.rooms.has(contactId)) return;
 
         const roomId = await this.getRoomId(contactId);
         console.log(`[Room] Joining ${roomId} for contact ${contactId}`);
 
-        // WebRTC Configuration (STUN/TURN)
+        // Fetch fresh TURN credentials from Metered
+        const turnServers = await this.fetchTurnCredentials();
+
+        // WebRTC Configuration
         const rtcConfig = {
             iceServers: [
-                // Public Google STUN servers
+                // STUN servers
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' },
-
-                // Free TURN servers from OpenRelay (community project)
-                {
-                    urls: 'turn:openrelay.metered.ca:80',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                },
-                {
-                    urls: 'turn:openrelay.metered.ca:443',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                },
-                {
-                    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject'
-                }
-            ]
+                // Dynamic TURN servers from Metered
+                ...turnServers
+            ],
+            iceCandidatePoolSize: 10
         };
 
         const room = joinRoom({ appId: APP_ID, rtcConfig }, roomId);
