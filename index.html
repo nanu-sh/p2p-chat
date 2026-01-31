@@ -14,9 +14,11 @@
         <div class="setup-card">
             <div class="logo">🔒</div>
             <h1>P2P Chat</h1>
-            <p>Private. Encrypted. No servers.</p>
-            <input type="text" id="setup-name" placeholder="Enter your name" maxlength="20" autocomplete="off">
-            <button id="btn-setup">Get Started</button>
+            <p>Private. Encrypted. Your server.</p>
+            <input type="text" id="setup-name" placeholder="Your name" maxlength="20" autocomplete="off">
+            <input type="text" id="server-url" placeholder="Server URL (e.g., ws://your-ip:3000)" autocomplete="off">
+            <small class="server-hint">Run <code>node server.js</code> on host, use ngrok for internet</small>
+            <button id="btn-setup">Connect</button>
         </div>
     </div>
 

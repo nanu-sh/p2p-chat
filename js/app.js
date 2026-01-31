@@ -1,15 +1,13 @@
-// P2P Chat - Main App
-import { joinRoom, selfId } from 'https://esm.run/trystero/nostr';
+// P2P Chat - Main App (Self-hosted signaling server)
+import { LocalP2P } from './localP2P.js';
 import Storage from './storage.js';
 import Crypto from './crypto.js';
 import MediaStore from './mediaStore.js';
 
-const APP_ID = 'p2p-chat-v1-secure';
+const APP_ID = 'p2p-chat-v1';
 
-// Metered TURN configuration
-// SECURITY: Set "Allowed Origins" in your Metered dashboard to restrict usage to your domain only
-const METERED_DOMAIN = 'nanu.metered.live';
-const METERED_API_KEY = 'mNiwiOPXP96SEeCaIjCPVddBtdFHJudcZQji_DosjTMoZQpW';
+// Server URL for signaling
+let serverUrl = localStorage.getItem('p2p_server_url') || '';
 
 const App = {
     // TURN credentials (fetched dynamically)
@@ -109,6 +107,8 @@ const App = {
             chatInputFooter: document.querySelector('.chat-input'),
             // Context menu
             contextMenu: document.getElementById('context-menu'),
+            // Server URL
+            serverUrlInput: document.getElementById('server-url'),
         };
     },
 
@@ -172,6 +172,12 @@ const App = {
     async setup() {
         const name = this.$.setupName.value.trim();
         if (!name) return alert('Enter your name');
+
+        // Get server URL
+        const url = this.$.serverUrlInput?.value.trim();
+        if (!url) return alert('Enter the server URL');
+        serverUrl = url.startsWith('ws') ? url : `ws://${url}`;
+        localStorage.setItem('p2p_server_url', serverUrl);
 
         try {
             const keys = await Crypto.generateKeyPair();
@@ -473,10 +479,31 @@ const App = {
     },
 
     // --- P2P Connection ---
-    connectToContacts() {
-        for (const id of Object.keys(this.contacts)) {
-            this.joinRoom(id);
+    p2p: null, // LocalP2P instance
+
+    async connectToServer() {
+        if (!serverUrl) {
+            console.error('[P2P] No server URL configured');
+            return;
         }
+
+        try {
+            this.p2p = new LocalP2P(serverUrl);
+            await this.p2p.connect();
+            console.log('[P2P] Connected to signaling server');
+
+            // Connect to all contacts
+            for (const id of Object.keys(this.contacts)) {
+                this.joinRoom(id);
+            }
+        } catch (err) {
+            console.error('[P2P] Failed to connect to server:', err);
+            alert('Failed to connect to server. Make sure the server is running.');
+        }
+    },
+
+    connectToContacts() {
+        this.connectToServer();
     },
 
     async getRoomId(contactId) {
@@ -487,59 +514,42 @@ const App = {
         return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 24);
     },
 
-    async fetchTurnCredentials() {
-        // Return cached credentials if still fresh (cache for 1 hour)
-        if (this.turnCredentials && Date.now() - this.turnCredentialsTime < 3600000) {
-            return this.turnCredentials;
-        }
-
-        try {
-            const response = await fetch(
-                `https://${METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`
-            );
-            if (!response.ok) throw new Error('Failed to fetch TURN credentials');
-
-            this.turnCredentials = await response.json();
-            this.turnCredentialsTime = Date.now();
-            console.log('[TURN] Fetched fresh credentials');
-            return this.turnCredentials;
-        } catch (err) {
-            console.error('[TURN] Failed to fetch credentials:', err);
-            // Fallback to STUN only
-            return [];
-        }
-    },
-
     async joinRoom(contactId) {
         if (this.rooms.has(contactId)) return;
+        if (!this.p2p) {
+            console.warn('[Room] P2P not connected yet');
+            return;
+        }
 
         const roomId = await this.getRoomId(contactId);
         console.log(`[Room] Joining ${roomId} for contact ${contactId}`);
 
-        // Fetch fresh TURN credentials from Metered
-        const turnServers = await this.fetchTurnCredentials();
+        // Join the room on the signaling server
+        this.p2p.joinRoom(roomId, {});
 
-        // WebRTC Configuration
-        const rtcConfig = {
-            iceServers: [
-                // STUN servers
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                // Dynamic TURN servers from Metered
-                ...turnServers
-            ],
-            iceCandidatePoolSize: 10
+        // Create a room-like object to store actions (compatible with existing code)
+        const room = {
+            roomId,
+            _send: null,
+            _sendId: null,
+            _sendCallEnd: null,
+            _sendFile: null,
+            _sendTyping: null,
+            onPeerJoin: (cb) => this.p2p.onPeerJoin(cb),
+            onPeerLeave: (cb) => this.p2p.onPeerLeave(cb),
+            onPeerStream: (cb) => this.p2p.onPeerStream(cb),
+            addStream: (stream) => this.p2p.addStream(stream),
+            leave: () => this.p2p.leaveRoom(roomId)
         };
 
-        const room = joinRoom({ appId: APP_ID, rtcConfig }, roomId);
         this.rooms.set(contactId, room);
 
-        // Actions
-        const [sendMsg, onMsg] = room.makeAction('msg');
-        const [sendId, onId] = room.makeAction('id');
-        const [sendCallEnd, onCallEnd] = room.makeAction('callEnd');
-        const [sendFile, onFile] = room.makeAction('file');
-        const [sendTyping, onTyping] = room.makeAction('typing');
+        // Create actions (like Trystero makeAction)
+        const [sendMsg, onMsg] = this.p2p.makeAction('msg');
+        const [sendId, onId] = this.p2p.makeAction('id');
+        const [sendCallEnd, onCallEnd] = this.p2p.makeAction('callEnd');
+        const [sendFile, onFile] = this.p2p.makeAction('file');
+        const [sendTyping, onTyping] = this.p2p.makeAction('typing');
 
         room._send = sendMsg;
         room._sendId = sendId;
@@ -566,7 +576,7 @@ const App = {
         });
 
         // Handle incoming audio streams (for receiving calls)
-        room.onPeerStream((stream, peerId) => {
+        this.p2p.onPeerStream((stream, peerId) => {
             console.log('[Call] Incoming stream from peer');
 
             // Ignore if we're already in a call or just ended one (cooldown)
@@ -584,14 +594,14 @@ const App = {
         });
 
         // Peer events
-        room.onPeerJoin(peerId => {
+        this.p2p.onPeerJoin(peerId => {
             console.log(`[Room ${roomId}] Peer joined:`, peerId);
             this.handlePeerConnect(contactId);
             // Send our identity
             sendId({ id: this.me.id, name: this.me.name, publicKey: this.me.publicKeyJwk });
         });
 
-        room.onPeerLeave(peerId => {
+        this.p2p.onPeerLeave(peerId => {
             console.log(`[Room ${roomId}] Peer left:`, peerId);
             this.handlePeerDisconnect(contactId);
         });
