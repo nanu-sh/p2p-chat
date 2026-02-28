@@ -1,25 +1,25 @@
-// P2P Chat - Main App (Self-hosted signaling server)
-import { LocalP2P } from './localP2P.js';
+// P2P Chat - Main App (PeerJS signaling)
 import Storage from './storage.js';
 import Crypto from './crypto.js';
 import MediaStore from './mediaStore.js';
 
 const APP_ID = 'p2p-chat-v1';
 
-// Server URL for signaling
+// Server URL for signaling (e.g., localhost:3000)
 let serverUrl = localStorage.getItem('p2p_server_url') || '';
 
 const App = {
-    // TURN credentials (fetched dynamically)
-    turnCredentials: null,
     // Identity
     me: null, // { id, name, publicKey, privateKey, publicKeyJwk }
 
+    // PeerJS instance
+    peer: null,
+    connections: new Map(), // contactId -> PeerJS DataConnection
+
     // Data
-    contacts: {}, // sessionId -> { name, publicKey, online }
-    rooms: new Map(), // sessionId -> Trystero room
-    sharedKeys: new Map(), // sessionId -> AES key
-    pendingMessages: new Map(), // sessionId -> [messages to send when online]
+    contacts: {}, // contactId -> { name, publicKey, online }
+    sharedKeys: new Map(), // contactId -> AES key
+    pendingMessages: new Map(), // contactId -> [messages to send when online]
 
     // State
     activeContact: null,
@@ -173,11 +173,24 @@ const App = {
         const name = this.$.setupName.value.trim();
         if (!name) return alert('Enter your name');
 
-        // Get server URL
-        const url = this.$.serverUrlInput?.value.trim();
-        if (!url) return alert('Enter the server URL');
-        serverUrl = url.startsWith('ws') ? url : `ws://${url}`;
-        localStorage.setItem('p2p_server_url', serverUrl);
+        // Get server URL details
+        let urlStr = this.$.serverUrlInput?.value.trim();
+        if (!urlStr) return alert('Enter the server Host/IP (e.g. localhost:3000 or mytunnel.ngrok.io)');
+
+        // Ensure it has a protocol to parse it easily
+        if (!urlStr.startsWith('http') && !urlStr.startsWith('ws')) {
+            urlStr = (urlStr.includes('localhost') || urlStr.match(/^\d+\.\d+\.\d+\.\d+/))
+                ? 'http://' + urlStr
+                : 'https://' + urlStr;
+        }
+
+        try {
+            new URL(urlStr); // Validates
+            serverUrl = urlStr;
+            localStorage.setItem('p2p_server_url', serverUrl);
+        } catch (e) {
+            return alert('Invalid URL format');
+        }
 
         try {
             const keys = await Crypto.generateKeyPair();
@@ -232,7 +245,7 @@ const App = {
         this.$.myId.title = 'Click to copy: ' + this.me.id;
 
         this.renderContacts();
-        this.connectToContacts();
+        this.initPeerJS();
     },
 
     copyId() {
@@ -478,106 +491,80 @@ const App = {
         return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     },
 
-    // --- P2P Connection ---
-    p2p: null, // LocalP2P instance
-
-    async connectToServer() {
+    // --- P2P Connection (PeerJS) ---
+    async initPeerJS() {
         if (!serverUrl) {
             console.error('[P2P] No server URL configured');
             return;
         }
 
+        let parsed;
         try {
-            this.p2p = new LocalP2P(serverUrl);
-            await this.p2p.connect();
-            console.log('[P2P] Connected to signaling server');
-
-            // Connect to all contacts
-            for (const id of Object.keys(this.contacts)) {
-                this.joinRoom(id);
-            }
-        } catch (err) {
-            console.error('[P2P] Failed to connect to server:', err);
-            alert('Failed to connect to server. Make sure the server is running.');
-        }
-    },
-
-    connectToContacts() {
-        this.connectToServer();
-    },
-
-    async getRoomId(contactId) {
-        // Deterministic room from both session IDs
-        const pair = [this.me.id, contactId].sort().join('|');
-        const bytes = new TextEncoder().encode(pair);
-        const hash = await crypto.subtle.digest('SHA-256', bytes);
-        return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 24);
-    },
-
-    async joinRoom(contactId) {
-        if (this.rooms.has(contactId)) return;
-        if (!this.p2p) {
-            console.warn('[Room] P2P not connected yet');
+            parsed = new URL(serverUrl);
+        } catch (e) {
+            console.error('[P2P] Invalid server URL', serverUrl);
             return;
         }
 
-        const roomId = await this.getRoomId(contactId);
-        console.log(`[Room] Joining ${roomId} for contact ${contactId}`);
+        const secure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
+        const host = parsed.hostname;
+        const port = parsed.port ? parseInt(parsed.port, 10) : (secure ? 443 : 80);
 
-        // Join the room on the signaling server
-        this.p2p.joinRoom(roomId, {});
+        console.log(`[P2P] Connecting to PeerServer at ${host}:${port} (secure: ${secure})`);
 
-        // Create a room-like object to store actions (compatible with existing code)
-        const room = {
-            roomId,
-            _send: null,
-            _sendId: null,
-            _sendCallEnd: null,
-            _sendFile: null,
-            _sendTyping: null,
-            onPeerJoin: (cb) => this.p2p.onPeerJoin(cb),
-            onPeerLeave: (cb) => this.p2p.onPeerLeave(cb),
-            onPeerStream: (cb) => this.p2p.onPeerStream(cb),
-            addStream: (stream) => this.p2p.addStream(stream),
-            leave: () => this.p2p.leaveRoom(roomId)
-        };
-
-        this.rooms.set(contactId, room);
-
-        // Create actions (like Trystero makeAction)
-        const [sendMsg, onMsg] = this.p2p.makeAction('msg');
-        const [sendId, onId] = this.p2p.makeAction('id');
-        const [sendCallEnd, onCallEnd] = this.p2p.makeAction('callEnd');
-        const [sendFile, onFile] = this.p2p.makeAction('file');
-        const [sendTyping, onTyping] = this.p2p.makeAction('typing');
-
-        room._send = sendMsg;
-        room._sendId = sendId;
-        room._sendCallEnd = sendCallEnd;
-        room._sendFile = sendFile;
-        room._sendTyping = sendTyping;
-
-        // Handle typing indicator
-        onTyping((data, peerId) => {
-            this.handleTypingSignal(contactId, data.typing);
-        });
-
-        // Handle incoming file chunks
-        onFile(async (data, peerId) => {
-            await this.receiveFileChunk(contactId, data);
-        });
-
-        // Handle call end from peer
-        onCallEnd((data, peerId) => {
-            console.log('[Call] Peer ended the call');
-            if (this.currentCall === contactId || this.pendingContactId === contactId) {
-                this.endCall(true); // true = don't send signal back
+        // Initialize PeerJS with our fixed session ID
+        this.peer = new Peer(this.me.id, {
+            host: host,
+            port: port,
+            path: '/peerjs/p2p',
+            secure: secure,
+            debug: 2,
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    {
+                        urls: "turn:openrelay.metered.ca:80",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:openrelay.metered.ca:443",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:openrelay.metered.ca:443?transport=tcp",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    }
+                ]
             }
         });
 
-        // Handle incoming audio streams (for receiving calls)
-        this.p2p.onPeerStream((stream, peerId) => {
-            console.log('[Call] Incoming stream from peer');
+        this.peer.on('open', (id) => {
+            console.log('[P2P] Connected to server with ID:', id);
+            // Connect to all existing contacts
+            this.connectToContacts();
+        });
+
+        this.peer.on('error', (err) => {
+            console.error('[P2P] Error:', err);
+            if (err.type === 'peer-unavailable') {
+                // Keep UI updated
+                console.warn('[P2P] Peer is offline:', err.message);
+            }
+        });
+
+        // Handle incoming data connections
+        this.peer.on('connection', (conn) => {
+            console.log(`[P2P] Incoming connection from ${conn.peer}`);
+            this.setupConnection(conn);
+        });
+
+        // Handle incoming media calls
+        this.peer.on('call', (call) => {
+            console.log(`[Call] Incoming call from ${call.peer}`);
 
             // Ignore if we're already in a call or just ended one (cooldown)
             if (this.currentCall || this.pendingContactId) {
@@ -589,59 +576,128 @@ const App = {
                 return;
             }
 
-            // Show incoming call UI with Accept/Decline buttons
-            this.showIncomingCall(contactId, stream);
-        });
+            // We must answer the call to get the stream (we wait for user accept to add audio)
+            this.pendingCall = call;
 
-        // Peer events
-        this.p2p.onPeerJoin(peerId => {
-            console.log(`[Room ${roomId}] Peer joined:`, peerId);
-            this.handlePeerConnect(contactId);
-            // Send our identity
-            sendId({ id: this.me.id, name: this.me.name, publicKey: this.me.publicKeyJwk });
-        });
+            call.on('stream', (remoteStream) => {
+                this.showIncomingCall(call.peer, remoteStream);
+            });
 
-        this.p2p.onPeerLeave(peerId => {
-            console.log(`[Room ${roomId}] Peer left:`, peerId);
-            this.handlePeerDisconnect(contactId);
-        });
-
-        // Receive identity
-        onId(async (data, peerId) => {
-            console.log('[Room] Got identity:', data);
-            if (data.id === contactId && data.publicKey) {
-                // Update contact with peer's actual name and public key
-                this.contacts[contactId].publicKey = data.publicKey;
-                if (data.name) {
-                    this.contacts[contactId].name = data.name;
+            call.on('close', () => {
+                console.log('[Call] Peer ended the call');
+                if (this.currentCall === call.peer || this.pendingContactId === call.peer) {
+                    this.endCall(true);
                 }
-                Storage.updateContact(contactId, {
-                    publicKey: data.publicKey,
-                    name: data.name || this.contacts[contactId].name
-                });
-                await this.ensureSharedKey(contactId);
+            });
+        });
+    },
 
-                // Refresh UI to show updated name
-                this.renderContacts();
-                if (this.activeContact === contactId) {
-                    this.$.chatName.textContent = data.name || this.contacts[contactId].name;
+    connectToContacts() {
+        if (!this.peer) return;
+
+        for (const contactId of Object.keys(this.contacts)) {
+            this.connectToPeer(contactId);
+        }
+    },
+
+    connectToPeer(contactId) {
+        if (!this.peer || this.connections.has(contactId)) return;
+
+        console.log(`[P2P] Attempting to connect to ${contactId}...`);
+        const conn = this.peer.connect(contactId, {
+            reliable: true
+        });
+
+        this.setupConnection(conn);
+    },
+
+    setupConnection(conn) {
+        // Setup event listeners for connection
+        conn.on('open', () => {
+            console.log(`[P2P] Connection established with ${conn.peer}`);
+            this.connections.set(conn.peer, conn);
+            this.handlePeerConnect(conn.peer);
+
+            // Send our identity to verify
+            conn.send({
+                action: 'id',
+                payload: { id: this.me.id, name: this.me.name, publicKey: this.me.publicKeyJwk }
+            });
+        });
+
+        conn.on('data', (data) => {
+            this.handleDataMessage(conn.peer, data);
+        });
+
+        conn.on('close', () => {
+            console.log(`[P2P] Connection closed with ${conn.peer}`);
+            this.connections.delete(conn.peer);
+            this.handlePeerDisconnect(conn.peer);
+        });
+
+        conn.on('error', (err) => {
+            console.error(`[P2P] Connection error with ${conn.peer}:`, err);
+            this.connections.delete(conn.peer);
+            this.handlePeerDisconnect(conn.peer);
+        });
+    },
+
+    handleDataMessage(peerId, data) {
+        if (!data || !data.action) return;
+
+        const payload = data.payload;
+        console.log(`[P2P] Received action: ${data.action} from ${peerId}`);
+
+        switch (data.action) {
+            case 'id':
+                if (payload.id === peerId && payload.publicKey) {
+                    // Update contact info
+                    if (!this.contacts[peerId]) {
+                        this.contacts[peerId] = { name: payload.name || 'Unknown', online: true };
+                    }
+                    this.contacts[peerId].publicKey = payload.publicKey;
+                    if (payload.name) {
+                        this.contacts[peerId].name = payload.name;
+                    }
+                    Storage.updateContact(peerId, {
+                        publicKey: payload.publicKey,
+                        name: payload.name || this.contacts[peerId].name
+                    });
+                    this.ensureSharedKey(peerId);
+
+                    this.renderContacts();
+                    if (this.activeContact === peerId) {
+                        this.$.chatName.textContent = payload.name || this.contacts[peerId].name;
+                    }
                 }
-            }
-        });
+                break;
 
-        // Receive message
-        onMsg(async (data, peerId) => {
-            console.log('[Room] Got message:', data);
-            await this.receiveMessage(contactId, data);
-        });
+            case 'msg':
+                this.receiveMessage(peerId, payload);
+                break;
+
+            case 'typing':
+                this.handleTypingSignal(peerId, payload.typing);
+                break;
+
+            case 'file':
+                this.receiveFileChunk(peerId, payload);
+                break;
+
+            case 'callEnd':
+                console.log('[Call] Peer sent callEnd signal');
+                if (this.currentCall === peerId || this.pendingContactId === peerId) {
+                    this.endCall(true);
+                }
+                break;
+        }
     },
 
     async answerCall(contactId) {
         try {
             this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const room = this.rooms.get(contactId);
-            if (room) {
-                room.addStream(this.localStream);
+            if (this.pendingCall && this.pendingCall.peer === contactId) {
+                this.pendingCall.answer(this.localStream);
                 this.$.callStatus.textContent = 'Connected';
             }
         } catch (err) {
@@ -696,8 +752,8 @@ const App = {
         if (!text || !this.activeContact) return;
 
         const contact = this.contacts[this.activeContact];
-        const room = this.rooms.get(this.activeContact);
-        const isOnline = contact?.online && room?._send;
+        const conn = this.connections.get(this.activeContact);
+        const isOnline = contact?.online && conn && conn.open;
 
         const msg = { text, time: Date.now() };
 
@@ -717,9 +773,9 @@ const App = {
             const key = await this.ensureSharedKey(this.activeContact);
             if (key) {
                 const encrypted = await Crypto.encrypt(key, JSON.stringify(msg));
-                room._send({ encrypted: true, ...encrypted });
+                conn.send({ action: 'msg', payload: { encrypted: true, ...encrypted } });
             } else {
-                room._send({ encrypted: false, ...msg });
+                conn.send({ action: 'msg', payload: { encrypted: false, ...msg } });
             }
         } else {
             // Queue for later
@@ -822,60 +878,62 @@ const App = {
     callStartTime: null,
     callTimerInterval: null,
     isMuted: false,
+    currentPeerCall: null, // PeerJS Call object
 
     async startCall() {
-        if (!this.activeContact) return;
-        const c = this.contacts[this.activeContact];
-
-        if (!c.online) {
-            alert('Contact is offline');
-            return;
+        const contactId = this.activeContact;
+        if (!contactId || !this.contacts[contactId]?.online) {
+            return alert('Contact is offline');
         }
 
         try {
             this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            this.currentCall = this.activeContact;
 
-            this.$.callAvatar.textContent = c.name[0].toUpperCase();
-            this.$.callName.textContent = c.name;
+            this.$.callAvatar.textContent = this.contacts[contactId].name[0].toUpperCase();
+            this.$.callName.textContent = this.contacts[contactId].name;
             this.$.callStatus.textContent = 'Calling...';
-            this.$.callTimer.textContent = '';
-            this.$.modalCall.classList.remove('hidden');
+            this.$.callTimer.textContent = '00:00';
 
-            // Hide accept/decline (we're calling), show mute
-            this.$.btnAcceptCall.classList.add('hidden');
-            this.$.btnDeclineCall.classList.add('hidden');
-            this.$.btnMute.classList.remove('hidden');
-            this.$.btnEndCall.classList.remove('hidden');
-            this.isMuted = false;
-            this.$.btnMute.classList.remove('muted');
+            this.showCallUI(true); // isInitiator
+
+            console.log(`[Call] Making call to ${contactId}`);
+            const call = this.peer.call(contactId, this.localStream);
+            this.currentCall = contactId;
+            this.currentPeerCall = call;
+
+            call.on('stream', (remoteStream) => {
+                console.log('[Call] Peer answered with stream');
+                this.$.callStatus.textContent = 'Connected';
+                this.$.remoteAudio.srcObject = remoteStream;
+                this.startCallTimer();
+            });
+
+            call.on('close', () => {
+                console.log('[Call] Call closed');
+                this.endCall(true);
+            });
+
+            call.on('error', (err) => {
+                console.error('[Call] Error:', err);
+                this.$.callStatus.textContent = 'Error connecting';
+                setTimeout(() => this.endCall(true), 2000);
+            });
 
             // Log call in chat
             const callMsg = { text: '📞 Voice call started', time: Date.now(), sent: true, isSystem: true };
             Storage.saveMessage(this.activeContact, callMsg);
             this.renderMessage(callMsg);
 
-            const room = this.rooms.get(this.activeContact);
-            if (room) {
-                room.addStream(this.localStream);
-
-                // Listen for peer's stream (when they answer)
-                room.onPeerStream((stream, peerId) => {
-                    console.log('[Call] Peer answered - got their stream');
-                    this.$.remoteAudio.srcObject = stream;
-                    this.$.callStatus.textContent = 'Connected';
-                    this.startCallTimer();
-                });
-            }
         } catch (err) {
-            console.error('Call error:', err);
+            console.error('Failed to get mic:', err);
             alert('Could not access microphone');
+            this.endCall(true); // cleanup
         }
     },
 
-    showIncomingCall(contactId, stream) {
+    showIncomingCall(contactId, call) {
         const c = this.contacts[contactId];
-        this.pendingStream = stream;
+        this.pendingCall = call; // Store the PeerJS call object
         this.pendingContactId = contactId;
 
         this.$.callAvatar.textContent = c?.name[0]?.toUpperCase() || '?';
@@ -896,43 +954,63 @@ const App = {
         if (this.activeContact === contactId) this.renderMessage(callMsg);
     },
 
+    showCallUI(isInitiator) {
+        this.$.modalCall.classList.remove('hidden');
+        this.$.btnAcceptCall.classList.toggle('hidden', isInitiator);
+        this.$.btnDeclineCall.classList.toggle('hidden', isInitiator);
+        this.$.btnMute.classList.toggle('hidden', !isInitiator);
+        this.$.btnEndCall.classList.remove('hidden');
+        this.isMuted = false;
+        this.$.btnMute.classList.remove('muted');
+    },
+
     async acceptCall() {
-        if (!this.pendingContactId) return;
+        if (!this.pendingContactId || !this.pendingCall) return;
 
         try {
             this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
             this.currentCall = this.pendingContactId;
+            this.currentPeerCall = this.pendingCall;
 
-            const room = this.rooms.get(this.pendingContactId);
-            if (room) {
-                room.addStream(this.localStream);
-            }
+            this.pendingCall.answer(this.localStream);
 
-            // Play incoming audio
-            this.$.remoteAudio.srcObject = this.pendingStream;
+            this.pendingCall.on('stream', (remoteStream) => {
+                console.log('[Call] Accepted - got remote stream');
+                this.$.remoteAudio.srcObject = remoteStream;
+                this.$.callStatus.textContent = 'Connected';
+                this.startCallTimer();
+            });
+
+            this.pendingCall.on('close', () => {
+                console.log('[Call] Call closed after accept');
+                this.endCall(true);
+            });
+
+            this.pendingCall.on('error', (err) => {
+                console.error('[Call] Error after accept:', err);
+                this.$.callStatus.textContent = 'Error connecting';
+                setTimeout(() => this.endCall(true), 2000);
+            });
 
             // Update UI
-            this.$.callStatus.textContent = 'Connected';
-            this.$.btnAcceptCall.classList.add('hidden');
-            this.$.btnDeclineCall.classList.add('hidden');
-            this.$.btnMute.classList.remove('hidden');
-            this.$.btnEndCall.classList.remove('hidden');
-            this.isMuted = false;
-            this.$.btnMute.classList.remove('muted');
+            this.$.callStatus.textContent = 'Connecting...';
+            this.showCallUI(false); // Not initiator
 
-            // Start timer
-            this.startCallTimer();
-
-            this.pendingStream = null;
+            // Start timer will be called on 'stream' event
+            this.pendingCall = null;
             this.pendingContactId = null;
         } catch (err) {
             console.error('Accept call error:', err);
             alert('Could not access microphone');
+            this.endCall(true); // cleanup
         }
     },
 
     declineCall() {
-        this.pendingStream = null;
+        if (this.pendingCall) {
+            this.pendingCall.close();
+        }
+        this.pendingCall = null;
         this.pendingContactId = null;
         this.$.modalCall.classList.add('hidden');
     },
@@ -959,19 +1037,25 @@ const App = {
         }, 1000);
     },
 
-    endCall(peerEnded = false) {
-        // Set cooldown to ignore stale streams
-        this.callEndCooldown = Date.now();
+    endCall(skipSignal = false) {
+        if (!this.currentCall && !this.pendingContactId && !this.currentPeerCall) return;
 
-        // Notify peer that call ended (unless they ended it)
-        if (!peerEnded) {
-            const contactId = this.currentCall || this.pendingContactId;
-            if (contactId) {
-                const room = this.rooms.get(contactId);
-                if (room?._sendCallEnd) {
-                    room._sendCallEnd({ ended: true });
+        console.log('[Call] Ending call...');
+
+        // Notify peer if we initiated the end
+        if (!skipSignal) {
+            const targetId = this.currentCall || this.pendingContactId;
+            if (targetId) {
+                const conn = this.connections.get(targetId);
+                if (conn && conn.open) {
+                    conn.send({ action: 'callEnd', payload: {} });
                 }
             }
+        }
+
+        if (this.currentPeerCall) {
+            this.currentPeerCall.close();
+            this.currentPeerCall = null;
         }
 
         if (this.localStream) {
@@ -987,6 +1071,7 @@ const App = {
         this.currentCall = null;
         this.pendingStream = null;
         this.pendingContactId = null;
+        this.pendingCall = null; // Clear pending PeerJS call
 
         this.$.remoteAudio.srcObject = null;
         this.$.modalCall.classList.add('hidden');
@@ -995,22 +1080,19 @@ const App = {
     // --- Typing Indicators ---
     sendTypingSignal() {
         if (!this.activeContact) return;
+        const conn = this.connections.get(this.activeContact);
+        if (!conn || !conn.open) return;
 
-        const room = this.rooms.get(this.activeContact);
-        if (!room?._sendTyping) return;
-
-        // Send typing=true
-        room._sendTyping({ typing: true });
-
-        // Clear previous timeout
-        if (this.typingTimeout) {
-            clearTimeout(this.typingTimeout);
+        if (!this.isTyping) {
+            this.isTyping = true;
+            conn.send({ action: 'typing', payload: { typing: true } });
         }
 
-        // Auto-stop after 3 seconds
+        clearTimeout(this.typingTimeout);
         this.typingTimeout = setTimeout(() => {
-            room._sendTyping({ typing: false });
-        }, 3000);
+            this.isTyping = false;
+            conn.send({ action: 'typing', payload: { typing: false } });
+        }, 3000); // Stop typing after 3s of inactivity
     },
 
     handleTypingSignal(contactId, isTyping) {
@@ -1094,8 +1176,8 @@ const App = {
     },
 
     async sendFile(file, isVoice = false) {
-        const room = this.rooms.get(this.activeContact);
-        if (!room?._sendFile) {
+        const conn = this.connections.get(this.activeContact);
+        if (!conn || !conn.open) {
             alert('Not connected to peer');
             return;
         }
@@ -1114,14 +1196,17 @@ const App = {
         console.log(`[File] Sending: ${file.name} (${totalChunks} chunks, ${file.size} bytes)`);
 
         // Send metadata first
-        room._sendFile({
-            type: 'meta',
-            fileId,
-            filename: file.name,
-            size: file.size,
-            mimeType: file.type,
-            totalChunks,
-            isVoice
+        conn.send({
+            action: 'file',
+            payload: {
+                type: 'meta',
+                fileId,
+                filename: file.name,
+                size: file.size,
+                mimeType: file.type,
+                totalChunks,
+                isVoice
+            }
         });
 
         // Small delay to ensure metadata arrives first
@@ -1136,11 +1221,14 @@ const App = {
             // Convert to base64 for reliable transfer
             const base64 = this.arrayBufferToBase64(chunk);
 
-            room._sendFile({
-                type: 'chunk',
-                fileId,
-                index: i,
-                data: base64
+            conn.send({
+                action: 'file',
+                payload: {
+                    type: 'chunk',
+                    fileId,
+                    index: i,
+                    data: base64
+                }
             });
 
             // Small delay between chunks to prevent overwhelming the channel
@@ -1151,24 +1239,18 @@ const App = {
 
         // Delay before sending complete signal
         await this.delay(100);
-        room._sendFile({ type: 'complete', fileId });
+        conn.send({ action: 'file', payload: { type: 'complete', fileId } });
 
         // Save file to IndexedDB for persistence
-        const mediaId = MediaStore.generateId();
-        await MediaStore.saveFile(mediaId, file, {
-            mimeType: file.type,
-            filename: file.name
-        });
+        await MediaStore.saveFile(fileId, file);
 
-        // Create blob URL for current session
-        const blobUrl = URL.createObjectURL(file);
+        // Display immediately in UI
         const msg = {
             type: isVoice ? 'voice' : 'file',
             filename: file.name,
             size: file.size,
             mimeType: file.type,
-            mediaId, // Store mediaId for persistence
-            blobUrl,
+            mediaId: fileId, // Store mediaId for persistence
             time: Date.now(),
             sent: true,
             duration: isVoice ? this.lastRecordingDuration : undefined
@@ -1202,66 +1284,67 @@ const App = {
         return buffer;
     },
 
+    // --- File Handling (Receiving) ---
     async receiveFileChunk(contactId, data) {
         if (data.type === 'meta') {
-            // Initialize file reception
+            console.log(`[File] Incoming: ${data.filename} (${data.totalChunks} chunks, ${data.size} bytes)`);
             this.pendingFiles.set(data.fileId, {
                 chunks: new Array(data.totalChunks),
                 received: 0,
-                metadata: data
+                ...data
             });
-            console.log(`[File] Receiving: ${data.filename} (${data.totalChunks} chunks)`);
-        } else if (data.type === 'chunk') {
-            const pending = this.pendingFiles.get(data.fileId);
-            if (!pending) return;
+            return;
+        }
 
-            // Decode base64 chunk
-            pending.chunks[data.index] = this.base64ToArrayBuffer(data.data);
-            pending.received++;
-            console.log(`[File] Chunk ${data.index + 1}/${pending.metadata.totalChunks} received`);
-        } else if (data.type === 'complete') {
-            const pending = this.pendingFiles.get(data.fileId);
-            if (!pending) return;
+        if (data.type === 'chunk') {
+            const fileData = this.pendingFiles.get(data.fileId);
+            if (!fileData) return;
 
-            // Reassemble file
-            const totalLength = pending.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-            const combined = new Uint8Array(totalLength);
-            let offset = 0;
-            for (const chunk of pending.chunks) {
-                combined.set(chunk, offset);
-                offset += chunk.length;
+            // Convert base64 back to array buffer
+            const arrayBuffer = this.base64ToArrayBuffer(data.data);
+            fileData.chunks[data.index] = arrayBuffer;
+            fileData.received++;
+
+            if (fileData.received % 10 === 0) {
+                console.log(`[File] Received ${fileData.received}/${fileData.totalChunks} chunks`);
+            }
+            return;
+        }
+
+        if (data.type === 'complete') {
+            const fileData = this.pendingFiles.get(data.fileId);
+            if (!fileData || fileData.received !== fileData.totalChunks) {
+                console.error('[File] Complete signal but missing chunks!', fileData);
+                return;
             }
 
-            const blob = new Blob([combined], { type: pending.metadata.mimeType });
+            console.log(`[File] Assembly complete: ${fileData.filename}`);
+            const blob = new Blob(fileData.chunks, { type: fileData.mimeType });
 
-            // Save to IndexedDB for persistence
-            const mediaId = MediaStore.generateId();
-            await MediaStore.saveFile(mediaId, blob, {
-                mimeType: pending.metadata.mimeType,
-                filename: pending.metadata.filename
-            });
-
-            const blobUrl = URL.createObjectURL(blob);
+            // Ensure media is saved and indexed properly
+            await MediaStore.saveFile(data.fileId, blob);
 
             const msg = {
-                type: pending.metadata.isVoice ? 'voice' : 'file',
-                filename: pending.metadata.filename,
-                size: pending.metadata.size,
-                mimeType: pending.metadata.mimeType,
-                mediaId, // Store mediaId for persistence
-                blobUrl,
+                type: fileData.isVoice ? 'voice' : 'file',
+                filename: fileData.filename,
+                size: fileData.size,
+                mimeType: fileData.mimeType,
+                mediaId: data.fileId,
                 time: Date.now(),
-                sent: false
+                sent: false,
+                isVoice: fileData.isVoice
             };
 
-            Storage.saveMessage(contactId, msg);
+            const stored = { ...msg, sent: false };
+            Storage.saveMessage(contactId, stored);
+
             if (this.activeContact === contactId) {
-                this.renderMessage(msg);
+                this.renderMessage(stored);
             }
             this.renderContacts();
 
+            // Clean up memory
             this.pendingFiles.delete(data.fileId);
-            console.log(`[File] Complete: ${pending.metadata.filename}`);
         }
     },
 
