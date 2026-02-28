@@ -7,6 +7,9 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "peer": "^1.0.2",
     "ws": "^8.14.2"
   }
 }

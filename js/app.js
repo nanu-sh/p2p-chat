@@ -48,27 +48,42 @@ const App = {
     $: {},
 
     async init() {
-        this.cacheDom();
-        this.bindEvents();
-        this.initContextMenu();
-        await MediaStore.init();
+        try {
+            this.cacheDom();
+            this.bindEvents();
+            this.initContextMenu();
+            await MediaStore.init();
 
-        // Check for invite links (e.g., ?peer=XYZ)
-        const params = new URLSearchParams(window.location.search);
-        const inviteId = params.get('peer');
-        if (inviteId) {
-            this.pendingInviteId = inviteId.trim();
-            // Optional: Clean URL so it doesn't stay there forever
-            window.history.replaceState({}, document.title, window.location.pathname);
-            console.log('[Initialize] Detected invite link for peer:', this.pendingInviteId);
-        }
+            // Check for invite links (e.g., ?peer=XYZ)
+            const params = new URLSearchParams(window.location.search);
+            const inviteId = params.get('peer');
+            if (inviteId) {
+                this.pendingInviteId = inviteId.trim();
+                // Optional: Clean URL so it doesn't stay there forever
+                window.history.replaceState({}, document.title, window.location.pathname);
+                console.log('[Initialize] Detected invite link for peer:', this.pendingInviteId);
+            }
 
-        const saved = Storage.getIdentity();
-        if (saved) {
-            await this.loadIdentity(saved);
-            this.showMain();
-        } else {
-            this.showSetup();
+            const saved = Storage.getIdentity();
+            if (saved) {
+                await this.loadIdentity(saved);
+                this.showMain();
+            } else {
+                this.showSetup();
+            }
+        } catch (err) {
+            console.error('[Init] Fatal error:', err);
+            document.body.innerHTML = `
+                <div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#020617;color:#fff;font-family:sans-serif;text-align:center;padding:20px;">
+                    <div>
+                        <h1 style="font-size:48px;margin-bottom:16px;">⚠️</h1>
+                        <h2>Failed to Initialize</h2>
+                        <p style="color:#94a3b8;margin-top:8px;">${err.message || 'Unknown error'}</p>
+                        <p style="color:#64748b;margin-top:16px;font-size:14px;">Try clearing your browser cache or using a different browser.</p>
+                        <button onclick="location.reload()" style="margin-top:20px;padding:10px 24px;background:#6366f1;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:16px;">Reload</button>
+                    </div>
+                </div>
+            `;
         }
     },
 
@@ -116,7 +131,6 @@ const App = {
             btnAttach: document.getElementById('btn-attach'),
             fileInput: document.getElementById('file-input'),
             btnVoice: document.getElementById('btn-voice'),
-            btnDisconnect: document.getElementById('btn-disconnect'),
             chatInputFooter: document.querySelector('.chat-input'),
             // Context menu
             contextMenu: document.getElementById('context-menu'),
@@ -216,6 +230,9 @@ const App = {
         try {
             const keys = await Crypto.generateKeyPair();
             const id = await Crypto.generateSessionId();
+
+            // Retry with a new ID if there's a collision on PeerJS
+            this.pendingSetupId = id;
             const publicKeyJwk = await Crypto.exportKey(keys.publicKey);
             const privateKeyJwk = await Crypto.exportKey(keys.privateKey);
 
@@ -262,7 +279,7 @@ const App = {
 
         this.$.myAvatar.textContent = this.me.name[0].toUpperCase();
         this.$.myName.textContent = this.me.name;
-        this.$.myId.textContent = this.me.id.slice(0, 16) + '...';
+        this.$.myId.textContent = this.me.id;
         this.$.myId.title = 'Click to copy: ' + this.me.id;
 
         this.renderContacts();
@@ -367,7 +384,7 @@ const App = {
         } catch (e) {
             console.warn('[Cache] Could not enumerate IndexedDBs', e);
             // Fallback to known DB name
-            window.indexedDB.deleteDatabase('P2PMediaStore');
+            window.indexedDB.deleteDatabase('p2p-chat-media');
         }
 
         // 3. Unregister Service Workers
@@ -416,7 +433,7 @@ const App = {
 
         this.renderContacts();
         this.hideModal('add');
-        this.joinRoom(id);
+        this.connectToPeer(id);
     },
 
     renderContacts() {
@@ -681,10 +698,24 @@ const App = {
             this.connectToContacts();
         });
 
-        this.peer.on('error', (err) => {
+        this.peer.on('error', async (err) => {
             console.error('[P2P] Error:', err);
-            if (err.type === 'peer-unavailable') {
-                // Keep UI updated
+            if (err.type === 'unavailable-id') {
+                // ID collision - generate a new one and retry
+                this._idRetries = (this._idRetries || 0) + 1;
+                if (this._idRetries > 3) {
+                    alert('Could not find a unique ID after 3 attempts. Please try again.');
+                    return;
+                }
+                console.warn(`[P2P] ID collision, regenerating (attempt ${this._idRetries})...`);
+                const newId = await Crypto.generateSessionId();
+                this.me.id = newId;
+                Storage.saveIdentity({ id: newId, name: this.me.name, publicKeyJwk: this.me.publicKeyJwk, privateKeyJwk: await Crypto.exportKey(this.me.privateKey) });
+                this.$.myId.textContent = newId;
+                this.$.myId.title = 'Click to copy: ' + newId;
+                this.peer.destroy();
+                this.initPeerJS();
+            } else if (err.type === 'peer-unavailable') {
                 console.warn('[P2P] Peer is offline:', err.message);
             }
         });

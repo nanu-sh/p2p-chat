@@ -12,14 +12,14 @@ const urlsToCache = [
 
 // Install event - cache assets
 self.addEventListener('install', event => {
-    console.log('SW v2: Installing...');
+    console.log('SW v9: Installing...');
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then(cache => {
-                console.log('SW v2: Caching files');
+                console.log('SW v9: Caching files');
                 return cache.addAll(urlsToCache);
             })
-            .catch(err => console.log('SW v2: Cache failed:', err))
+            .catch(err => console.log('SW v9: Cache failed:', err))
     );
     // Force immediate activation
     self.skipWaiting();
@@ -27,13 +27,13 @@ self.addEventListener('install', event => {
 
 // Activate event - clean up old caches
 self.addEventListener('activate', event => {
-    console.log('SW v2: Activating...');
+    console.log('SW v9: Activating...');
     event.waitUntil(
         caches.keys().then(cacheNames => {
             return Promise.all(
                 cacheNames.map(cacheName => {
                     if (cacheName !== CACHE_NAME) {
-                        console.log('SW v2: Deleting old cache:', cacheName);
+                        console.log('SW v9: Deleting old cache:', cacheName);
                         return caches.delete(cacheName);
                     }
                 })
