@@ -1357,21 +1357,30 @@ const App = {
         const CHUNK_SIZE = 8192; // 8KB chunks (smaller for reliability)
         const totalChunks = Math.ceil(arrayBuffer.byteLength / CHUNK_SIZE);
 
-        console.log(`[File] Sending: ${file.name} (${totalChunks} chunks, ${file.size} bytes)`);
+        // Get encryption key if available
+        const key = await this.ensureSharedKey(this.activeContact);
+        const isEncrypted = !!key;
 
-        // Send metadata first
-        conn.send({
-            action: 'file',
-            payload: {
-                type: 'meta',
-                fileId,
-                filename: file.name,
-                size: file.size,
-                mimeType: file.type,
-                totalChunks,
-                isVoice
-            }
-        });
+        console.log(`[File] Sending: ${file.name} (${totalChunks} chunks, ${file.size} bytes, encrypted: ${isEncrypted})`);
+
+        // Send metadata first (encrypt filename/size/type for privacy)
+        const metaPayload = {
+            type: 'meta',
+            fileId,
+            filename: file.name,
+            size: file.size,
+            mimeType: file.type,
+            totalChunks,
+            isVoice,
+            encrypted: isEncrypted
+        };
+
+        if (isEncrypted) {
+            const encMeta = await Crypto.encrypt(key, JSON.stringify(metaPayload));
+            conn.send({ action: 'file', payload: { type: 'meta-enc', ...encMeta } });
+        } else {
+            conn.send({ action: 'file', payload: metaPayload });
+        }
 
         // Small delay to ensure metadata arrives first
         await this.delay(100);
@@ -1385,15 +1394,28 @@ const App = {
             // Convert to base64 for reliable transfer
             const base64 = this.arrayBufferToBase64(chunk);
 
-            conn.send({
-                action: 'file',
-                payload: {
-                    type: 'chunk',
-                    fileId,
-                    index: i,
-                    data: base64
-                }
-            });
+            if (isEncrypted) {
+                const encChunk = await Crypto.encrypt(key, base64);
+                conn.send({
+                    action: 'file',
+                    payload: {
+                        type: 'chunk-enc',
+                        fileId,
+                        index: i,
+                        ...encChunk
+                    }
+                });
+            } else {
+                conn.send({
+                    action: 'file',
+                    payload: {
+                        type: 'chunk',
+                        fileId,
+                        index: i,
+                        data: base64
+                    }
+                });
+            }
 
             // Small delay between chunks to prevent overwhelming the channel
             if (i < totalChunks - 1) {
@@ -1450,13 +1472,62 @@ const App = {
 
     // --- File Handling (Receiving) ---
     async receiveFileChunk(contactId, data) {
+        // Handle encrypted metadata
+        if (data.type === 'meta-enc') {
+            try {
+                const key = await this.ensureSharedKey(contactId);
+                if (!key) {
+                    console.error('[File] Cannot decrypt file metadata - no shared key');
+                    return;
+                }
+                const decrypted = await Crypto.decrypt(key, { iv: data.iv, data: data.data });
+                const meta = JSON.parse(decrypted);
+                console.log(`[File] Incoming (encrypted): ${meta.filename} (${meta.totalChunks} chunks, ${meta.size} bytes)`);
+                this.pendingFiles.set(meta.fileId, {
+                    chunks: new Array(meta.totalChunks),
+                    received: 0,
+                    encrypted: true,
+                    ...meta
+                });
+            } catch (err) {
+                console.error('[File] Failed to decrypt file metadata:', err);
+            }
+            return;
+        }
+
         if (data.type === 'meta') {
             console.log(`[File] Incoming: ${data.filename} (${data.totalChunks} chunks, ${data.size} bytes)`);
             this.pendingFiles.set(data.fileId, {
                 chunks: new Array(data.totalChunks),
                 received: 0,
+                encrypted: false,
                 ...data
             });
+            return;
+        }
+
+        // Handle encrypted chunks
+        if (data.type === 'chunk-enc') {
+            const fileData = this.pendingFiles.get(data.fileId);
+            if (!fileData) return;
+
+            try {
+                const key = await this.ensureSharedKey(contactId);
+                if (!key) {
+                    console.error('[File] Cannot decrypt chunk - no key');
+                    return;
+                }
+                const decryptedBase64 = await Crypto.decrypt(key, { iv: data.iv, data: data.data });
+                const arrayBuffer = this.base64ToArrayBuffer(decryptedBase64);
+                fileData.chunks[data.index] = arrayBuffer;
+                fileData.received++;
+
+                if (fileData.received % 10 === 0) {
+                    console.log(`[File] Received ${fileData.received}/${fileData.totalChunks} encrypted chunks`);
+                }
+            } catch (err) {
+                console.error('[File] Failed to decrypt chunk:', data.index, err);
+            }
             return;
         }
 
@@ -1482,7 +1553,7 @@ const App = {
                 return;
             }
 
-            console.log(`[File] Assembly complete: ${fileData.filename}`);
+            console.log(`[File] Assembly complete: ${fileData.filename} (encrypted: ${fileData.encrypted})`);
             const blob = new Blob(fileData.chunks, { type: fileData.mimeType });
 
             // Ensure media is saved and indexed properly
