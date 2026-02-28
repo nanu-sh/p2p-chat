@@ -1,131 +1,51 @@
-# P2P Chat 🔒
+# P2P Chat
 
-A secure peer-to-peer chat application with **your own signaling server**. No third-party services required - just you, your friends, and direct connections.
+A secure, open-source peer-to-peer chat application. It provides end-to-end encrypted messaging, file sharing, and voice calls directly between browsers, using a lightweight Node.js signaling server to establish the initial connection.
 
-## Features ✨
+## Features
 
-- 🔒 **Self-Hosted**: Run your own signaling server, no external services needed
-- 🌐 **IPv6 Support**: Works over the internet with IPv6 (Jio and other carriers)
-- 🔐 **E2E Encryption**: AES-GCM with ECDH key exchange
-- 📞 **Voice Calls**: Secure P2P voice calls
-- 📎 **File Sharing**: Send images, documents, videos
-- 🎤 **Voice Notes**: Record and send audio messages
-- ⌨️ **Typing Indicators**: Real-time typing status
-- 💾 **Offline Messages**: Messages queue when peer is offline
+- **End-to-End Encryption**: Messages and files are encrypted client-side using AES-GCM-256 with ECDH key exchange. The server never sees your content.
+- **Direct P2P**: Once connected, all data flows directly between peers via WebRTC data channels.
+- **File Sharing**: Securely send images, documents, and videos of any size.
+- **Voice Calls & Notes**: High-quality WebRTC audio streaming and recordable voice notes.
+- **Frictionless Connect**: Easily connect using short 6-character connection codes or shareable invite links (`?peer=ID`).
+- **Offline Queuing**: Messages queue locally and send automatically when the peer reconnects.
+- **Progressive Web App (PWA)**: Installable on desktop and mobile for native-like access.
 
-## Quick Start 🚀
+## Quick Start
 
-### 1. Install Dependencies
+### 1. Requirements
+- [Node.js](https://nodejs.org/) (v16+)
+- A modern web browser
+
+### 2. Run the Signaling Server
+The server is only used to broker the initial WebRTC connection.
 ```bash
-cd p2p-chat
 npm install
-```
-
-### 2. Start the Server
-```bash
-node server.js
-```
-
-You'll see output like:
-```
-╔═══════════════════════════════════════════════════════════════════════════╗
-║                    🚀 P2P Chat Server Running (IPv6 Enabled)              ║
-╠═══════════════════════════════════════════════════════════════════════════╣
-║  Local:     http://localhost:3000                                         ║
-║  IPv4 LAN:  ws://192.168.x.x:3000
-║  IPv6:      ws://[2402:3a80:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx]:3000
-╠═══════════════════════════════════════════════════════════════════════════╣
-║  🌐 INTERNET ACCESS: Share the IPv6 address with friends on IPv6 networks ║
-╚═══════════════════════════════════════════════════════════════════════════╝
+npm start
 ```
 
 ### 3. Connect
+1. Open `http://localhost:3000` in your browser.
+2. Enter a display name.
+3. Share your 6-character connection code, or copy the invite link.
+4. (Optional) To connect over the internet, expose port `3000` via [ngrok](https://ngrok.com/), [Cloudflare Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), or use direct IPv6.
 
-1. Open `http://localhost:3000` in your browser
-2. Enter your name
-3. Enter the server URL (shown when you start the server)
-4. Click **Connect**
+## Architecture & Security
 
-### 4. Share with Friends
+- **Signaling**: Express + PeerJS Server (`server.js`)
+- **Transport**: WebRTC Data Channels (PeerJS)
+- **Encryption**: Web Crypto API
+  - Key Exchange: ECDH P-256
+  - Key Derivation: HKDF-SHA256
+  - Content Encryption: AES-GCM-256
+- **Storage**: IndexedDB (Files/Media) and `localStorage` (Keys/Messages/Identity)
 
-- **Same network (WiFi/Hotspot)**: Share your IPv4 LAN address
-- **Internet (IPv6)**: Share your IPv6 address - both users need IPv6
-
-## How It Works
-
-```
-┌─────────────┐     WebSocket     ┌─────────────────┐
-│  Your PC    │◄─────────────────►│ Signaling Server│
-│  (Browser)  │                   │  (server.js)    │
-└──────┬──────┘                   └────────┬────────┘
-       │                                   │
-       │         WebRTC (Direct P2P)       │
-       │◄──────────────────────────────────┤
-       │                                   │
-┌──────┴──────┐                   ┌────────┴────────┐
-│Friend's PC  │◄─────────────────►│                 │
-│  (Browser)  │     WebSocket     │                 │
-└─────────────┘                   └─────────────────┘
-```
-
-1. **Signaling** happens through your server (WebSocket)
-2. **Actual chat** goes directly peer-to-peer (WebRTC)
-3. Server only helps establish connection, doesn't see messages
-
-## Network Requirements
-
-| Scenario | What You Need |
-|----------|---------------|
-| Same WiFi/Hotspot | Just run the server, share local IP |
-| Internet (Home WiFi) | Port forward 3000 on your router |
-| Internet (Mobile Hotspot) | Need IPv6 (Jio 5G has it!) |
-
-### Checking IPv6
-```bash
-# Windows
-curl -6 ifconfig.me
-
-# If you see an address starting with "2" (like 2402:...), you have IPv6!
-```
+*Note: Private keys are stored in the browser's `localStorage` as JWKs. For production deployments handling highly sensitive data, consider migrating to `extractable: false` Web Crypto keys.*
 
 ## Tech Stack
-
-- **Backend**: Node.js, `ws` (WebSocket)
-- **Frontend**: Vanilla JS, WebRTC
-- **Encryption**: Web Crypto API (ECDH + AES-GCM)
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `server.js` | WebSocket signaling server |
-| `js/localP2P.js` | WebRTC connection manager |
-| `js/app.js` | Main application logic |
-| `js/crypto.js` | E2E encryption |
-| `js/storage.js` | Local storage handling |
-
-## Security 🛡️
-
-- **No central server**: Your server, your rules
-- **E2E Encryption**: Messages encrypted before sending
-- **Direct P2P**: Chat data never touches the signaling server
-- **Local keys**: Private keys stay in your browser
-
-## Troubleshooting
-
-**Connection fails over internet?**
-- Check both users have IPv6
-- Firewall may be blocking port 3000
-- Try disabling Windows Firewall temporarily
-
-**Works on LAN but not internet?**
-- Mobile hotspots use CGNAT (blocks incoming IPv4)
-- IPv6 is the solution for mobile hotspots
+- **Frontend**: Vanilla HTML/CSS/JS (No frameworks)
+- **Backend (Signaling)**: Node.js, Express, PeerJS Server
 
 ## License
-
 MIT
-
----
-
-**Built for privacy, powered by WebRTC** 🔐
