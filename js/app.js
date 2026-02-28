@@ -68,6 +68,7 @@ const App = {
             mainScreen: document.getElementById('main-screen'),
             setupName: document.getElementById('setup-name'),
             btnSetup: document.getElementById('btn-setup'),
+            btnClearCache: document.getElementById('btn-clear-cache'),
             myAvatar: document.getElementById('my-avatar'),
             myName: document.getElementById('my-name'),
             myId: document.getElementById('my-id'),
@@ -115,6 +116,9 @@ const App = {
     bindEvents() {
         // Setup
         this.$.btnSetup.onclick = () => this.setup();
+        if (this.$.btnClearCache) {
+            this.$.btnClearCache.onclick = () => this.clearCache();
+        }
         this.$.setupName.onkeydown = (e) => {
             if (e.key === 'Enter') this.setup();
         };
@@ -258,6 +262,50 @@ const App = {
                 this.$.myId.style.color = '';
             }, 1500);
         });
+    },
+
+    // --- Cache Management ---
+    async clearCache() {
+        if (!confirm('Warning: This will delete your identity, all saved contacts, messages, and files. Are you sure you want to completely reset the app?')) {
+            return;
+        }
+
+        console.log('[Cache] Clearing application data...');
+
+        // 1. Clear LocalStorage
+        localStorage.clear();
+
+        // 2. Clear IndexedDB (MediaStore)
+        try {
+            const dbs = await window.indexedDB.databases();
+            for (const db of dbs) {
+                if (db.name) {
+                    window.indexedDB.deleteDatabase(db.name);
+                    console.log(`[Cache] Deleted IndexedDB: ${db.name}`);
+                }
+            }
+        } catch (e) {
+            console.warn('[Cache] Could not enumerate IndexedDBs', e);
+            // Fallback to known DB name
+            window.indexedDB.deleteDatabase('P2PMediaStore');
+        }
+
+        // 3. Unregister Service Workers
+        if ('serviceWorker' in navigator) {
+            try {
+                const registrations = await navigator.serviceWorker.getRegistrations();
+                for (const registration of registrations) {
+                    await registration.unregister();
+                    console.log('[Cache] Unregistered Service Worker');
+                }
+            } catch (err) {
+                console.error('[Cache] Error unregistering SW', err);
+            }
+        }
+
+        // 4. Reload page
+        alert('Cache cleared! The application will now reload.');
+        window.location.reload(true);
     },
 
     // --- Modals ---
