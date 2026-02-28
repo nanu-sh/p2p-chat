@@ -91,6 +91,7 @@ const App = {
             chatName: document.getElementById('chat-name'),
             chatStatus: document.getElementById('chat-status'),
             btnCall: document.getElementById('btn-call'),
+            btnDisconnect: document.getElementById('btn-disconnect'),
             btnDelete: document.getElementById('btn-delete'),
             messages: document.getElementById('messages'),
             msgInput: document.getElementById('msg-input'),
@@ -214,7 +215,7 @@ const App = {
 
         try {
             const keys = await Crypto.generateKeyPair();
-            const id = await Crypto.generateSessionId(keys.publicKey);
+            const id = await Crypto.generateSessionId();
             const publicKeyJwk = await Crypto.exportKey(keys.publicKey);
             const privateKeyJwk = await Crypto.exportKey(keys.privateKey);
 

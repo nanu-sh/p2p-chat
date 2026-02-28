@@ -35,12 +35,17 @@ const Crypto = {
         );
     },
 
-    // Generate Session ID from public key (first 16 bytes of SHA-256 as hex)
-    async generateSessionId(publicKey) {
-        const raw = await crypto.subtle.exportKey('raw', publicKey);
-        const hash = await crypto.subtle.digest('SHA-256', raw);
-        const bytes = new Uint8Array(hash.slice(0, 16));
-        return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    // Generate random 6-character Session ID
+    async generateSessionId() {
+        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+        const randomValues = new Uint32Array(6);
+        crypto.getRandomValues(randomValues);
+
+        let result = '';
+        for (let i = 0; i < 6; i++) {
+            result += chars[randomValues[i] % chars.length];
+        }
+        return result;
     },
 
     // Derive shared AES key from ECDH
