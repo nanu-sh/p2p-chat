@@ -53,6 +53,16 @@ const App = {
         this.initContextMenu();
         await MediaStore.init();
 
+        // Check for invite links (e.g., ?peer=XYZ)
+        const params = new URLSearchParams(window.location.search);
+        const inviteId = params.get('peer');
+        if (inviteId) {
+            this.pendingInviteId = inviteId.trim();
+            // Optional: Clean URL so it doesn't stay there forever
+            window.history.replaceState({}, document.title, window.location.pathname);
+            console.log('[Initialize] Detected invite link for peer:', this.pendingInviteId);
+        }
+
         const saved = Storage.getIdentity();
         if (saved) {
             await this.loadIdentity(saved);
@@ -72,6 +82,7 @@ const App = {
             myAvatar: document.getElementById('my-avatar'),
             myName: document.getElementById('my-name'),
             myId: document.getElementById('my-id'),
+            btnShareLink: document.getElementById('btn-share-link'),
             btnAdd: document.getElementById('btn-add'),
             contactsList: document.getElementById('contacts-list'),
             emptyChat: document.getElementById('empty-chat'),
@@ -128,6 +139,11 @@ const App = {
 
         // Copy ID
         this.$.myId.onclick = () => this.copyId();
+
+        // Share Invite Link
+        if (this.$.btnShareLink) {
+            this.$.btnShareLink.onclick = () => this.copyInviteLink();
+        }
 
         // Add contact
         this.$.btnAdd.onclick = () => this.showModal('add');
@@ -250,6 +266,35 @@ const App = {
 
         this.renderContacts();
         this.initPeerJS();
+
+        // Process any pending invite link right after loading main screen
+        this.processPendingInvite();
+    },
+
+    processPendingInvite() {
+        if (!this.pendingInviteId) return;
+
+        const inviteId = this.pendingInviteId;
+        this.pendingInviteId = null; // Clear it
+
+        if (inviteId === this.me.id) {
+            alert("You can't connect to your own invite link.");
+            return;
+        }
+
+        if (this.contacts[inviteId]) {
+            console.log('[Invite] Contact already exists, opening chat.');
+            this.openChat(inviteId);
+            return;
+        }
+
+        console.log('[Invite] Processing new peer connection', inviteId);
+
+        // Populate the add modal to let them verify and name the person
+        this.$.contactId.value = inviteId;
+        this.$.contactName.value = 'Invited Peer';
+        this.showModal('add');
+        this.$.contactName.select(); // Highlight the temp name so they can efficiently change it
     },
 
     copyId() {
@@ -261,6 +306,40 @@ const App = {
                 this.$.myId.textContent = original;
                 this.$.myId.style.color = '';
             }, 1500);
+        });
+    },
+
+    copyInviteLink() {
+        if (!this.me?.id) return;
+        const link = `${window.location.origin}${window.location.pathname}?peer=${this.me.id}`;
+
+        navigator.clipboard.writeText(link).then(() => {
+            const btn = this.$.btnShareLink;
+            const originalColor = btn.style.color;
+            btn.style.color = 'var(--online)';
+
+            // Brief popup or visual feedback
+            const tooltip = document.createElement('div');
+            tooltip.textContent = 'Invite Link Copied!';
+            tooltip.style.position = 'fixed';
+            tooltip.style.bottom = '20px';
+            tooltip.style.left = '50%';
+            tooltip.style.transform = 'translateX(-50%)';
+            tooltip.style.background = 'var(--online)';
+            tooltip.style.color = '#fff';
+            tooltip.style.padding = '8px 16px';
+            tooltip.style.borderRadius = '20px';
+            tooltip.style.zIndex = '10000';
+            tooltip.style.fontSize = '14px';
+            tooltip.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
+            document.body.appendChild(tooltip);
+
+            setTimeout(() => {
+                btn.style.color = originalColor;
+                tooltip.style.opacity = '0';
+                tooltip.style.transition = 'opacity 0.3s';
+                setTimeout(() => tooltip.remove(), 300);
+            }, 2000);
         });
     },
 

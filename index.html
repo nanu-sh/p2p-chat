@@ -41,7 +41,16 @@
                     <div class="avatar" id="my-avatar">?</div>
                     <div class="profile-info">
                         <span class="name" id="my-name">Me</span>
-                        <span class="session-id" id="my-id" title="Click to copy">Loading...</span>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <span class="session-id" id="my-id" title="Click to copy ID">Loading...</span>
+                            <button id="btn-share-link" class="icon-btn" title="Copy Invite Link"
+                                style="width: 20px; height: 20px; padding: 2px;">
+                                <svg viewBox="0 0 24 24" fill="currentColor">
+                                    <path
+                                        d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z" />
+                                </svg>
+                            </button>
+                        </div>
                     </div>
                 </div>
                 <button id="btn-add" class="icon-btn" title="Add Contact">
