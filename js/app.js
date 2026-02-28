@@ -335,10 +335,10 @@ const App = {
         const c = this.contacts[this.activeContact];
         if (!confirm(`Delete ${c.name}?`)) return;
 
-        // Leave room
-        const room = this.rooms.get(this.activeContact);
-        if (room) room.leave();
-        this.rooms.delete(this.activeContact);
+        // Leave connection
+        const conn = this.connections.get(this.activeContact);
+        if (conn) conn.close();
+        this.connections.delete(this.activeContact);
         this.sharedKeys.delete(this.activeContact);
 
         Storage.deleteContact(this.activeContact);
@@ -366,8 +366,8 @@ const App = {
         this.updateChatStatus();
 
         // Auto-reconnect if disconnected
-        if (!c.online && !this.rooms.has(contactId)) {
-            this.joinRoom(contactId);
+        if (!c.online && !this.connections.has(contactId)) {
+            this.connectToPeer(contactId);
         }
 
         this.renderMessages();
@@ -426,6 +426,11 @@ const App = {
             <div class="meta">
                 <span class="time">${new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             </div>
+            <button class="delete-btn" title="Delete" onclick="App.deleteMessage(${index})">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+                    <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                </svg>
+            </button>
         `;
 
         // Setup context menu (right-click / long-press)
@@ -797,8 +802,8 @@ const App = {
 
         console.log(`[Queue] Flushing ${pending.length} pending messages`);
 
-        const room = this.rooms.get(contactId);
-        if (!room?._send) return;
+        const conn = this.connections.get(contactId);
+        if (!conn || !conn.open) return;
 
         // Wait for connection to stabilize
         await this.delay(500);
@@ -809,9 +814,9 @@ const App = {
             try {
                 if (key) {
                     const encrypted = await Crypto.encrypt(key, JSON.stringify(msg));
-                    room._send({ encrypted: true, ...encrypted });
+                    conn.send({ action: 'msg', payload: { encrypted: true, ...encrypted } });
                 } else {
-                    room._send({ encrypted: false, ...msg });
+                    conn.send({ action: 'msg', payload: { encrypted: false, ...msg } });
                 }
                 console.log('[Queue] Sent:', msg.text?.slice(0, 20));
                 await this.delay(100);
@@ -1139,10 +1144,10 @@ const App = {
     disconnectPeer() {
         if (!this.activeContact) return;
 
-        const room = this.rooms.get(this.activeContact);
-        if (room) {
-            room.leave();
-            this.rooms.delete(this.activeContact);
+        const conn = this.connections.get(this.activeContact);
+        if (conn) {
+            conn.close();
+            this.connections.delete(this.activeContact);
             this.sharedKeys.delete(this.activeContact);
         }
 
