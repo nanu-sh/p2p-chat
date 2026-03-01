@@ -826,8 +826,22 @@ const App = {
 
         this.peer.on('open', (id) => {
             console.log('[P2P] Connected to server with ID:', id);
+            this.showToast('Connected to signaling server', 'success');
             // Connect to all existing contacts
             this.connectToContacts();
+        });
+
+        this.peer.on('disconnected', () => {
+            console.warn('[P2P] Disconnected from signaling server, reconnecting...');
+            this.showToast('Reconnecting to server...', 'info');
+            // PeerJS auto-reconnect
+            if (this.peer && !this.peer.destroyed) {
+                setTimeout(() => {
+                    if (this.peer && !this.peer.destroyed) {
+                        this.peer.reconnect();
+                    }
+                }, 3000);
+            }
         });
 
         this.peer.on('error', async (err) => {
@@ -848,7 +862,12 @@ const App = {
                 this.peer.destroy();
                 this.initPeerJS();
             } else if (err.type === 'peer-unavailable') {
-                console.warn('[P2P] Peer is offline:', err.message);
+                const peerId = err.message?.match(/peer\s+(\S+)/i)?.[1] || 'unknown';
+                const contact = this.contacts[peerId];
+                const name = contact?.name || 'Peer';
+                this.showToast(`${name} is not online right now`, 'info');
+            } else if (err.type === 'network' || err.type === 'server-error') {
+                this.showToast('Server connection error. Retrying...', 'error');
             }
         });
 
