@@ -30,17 +30,17 @@
         <div class="setup-card">
             <div class="logo" aria-hidden="true">🔒</div>
             <h1>P2P Chat</h1>
-            <p>Private. Encrypted. Your server.</p>
+            <p>Private. Encrypted. P2P.</p>
             <label for="setup-name" class="hidden">Your name</label>
             <input type="text" id="setup-name" placeholder="Your name" maxlength="20" autocomplete="off">
             <div class="input-group">
                 <label for="server-url" class="hidden">Server URL</label>
-                <input type="text" id="server-url" placeholder="Server URL (e.g., localhost:3000 or mytunnel.ngrok.io)"
+                <input type="text" id="server-url" placeholder="Optional: Custom Server URL (e.g. localhost:3000)"
                     autocomplete="off">
             </div>
 
             <small class="server-hint">
-                Run <code>node server.js</code> locally, or use ngrok/Cloudflare Tunnel for internet access
+                Leave blank to use the free public server, or enter your own custom <code>node server.js</code> URL.
             </small>
 
             <button id="btn-setup">Connect</button>

@@ -141,6 +141,8 @@ const App = {
             contextMenu: document.getElementById('context-menu'),
             // Server URL
             serverUrlInput: document.getElementById('server-url'),
+            // Toast
+            toastContainer: document.getElementById('toast-container'),
         };
     },
 
@@ -216,25 +218,29 @@ const App = {
     // --- Setup ---
     async setup() {
         const name = this.$.setupName.value.trim();
-        if (!name) return alert('Enter your name');
+        if (!name) return this.showToast('Enter your name', 'error');
 
         // Get server URL details
-        let urlStr = this.$.serverUrlInput?.value.trim();
-        if (!urlStr) return alert('Enter the server Host/IP (e.g. localhost:3000 or mytunnel.ngrok.io)');
+        let urlStr = this.$.serverUrlInput?.value.trim() || '';
 
-        // Ensure it has a protocol to parse it easily
-        if (!urlStr.startsWith('http') && !urlStr.startsWith('ws')) {
-            urlStr = (urlStr.includes('localhost') || urlStr.match(/^\d+\.\d+\.\d+\.\d+/))
-                ? 'http://' + urlStr
-                : 'https://' + urlStr;
-        }
+        if (urlStr) {
+            // Ensure it has a protocol to parse it easily
+            if (!urlStr.startsWith('http') && !urlStr.startsWith('ws')) {
+                urlStr = (urlStr.includes('localhost') || urlStr.match(/^\d+\.\d+\.\d+\.\d+/))
+                    ? 'http://' + urlStr
+                    : 'https://' + urlStr;
+            }
 
-        try {
-            new URL(urlStr); // Validates
-            serverUrl = urlStr;
-            localStorage.setItem('p2p_server_url', serverUrl);
-        } catch (e) {
-            return alert('Invalid URL format');
+            try {
+                new URL(urlStr); // Validates
+                serverUrl = urlStr;
+                localStorage.setItem('p2p_server_url', serverUrl);
+            } catch (e) {
+                return this.showToast('Invalid URL format', 'error');
+            }
+        } else {
+            serverUrl = '';
+            localStorage.removeItem('p2p_server_url');
         }
 
         try {
@@ -258,7 +264,7 @@ const App = {
             this.showMain();
         } catch (err) {
             console.error('Setup error:', err);
-            alert('Failed to create identity');
+            this.showToast('Failed to create identity', 'error');
         }
     },
 
@@ -279,13 +285,23 @@ const App = {
     },
 
     showSetup() {
-        this.$.setupScreen.classList.remove('hidden');
         this.$.mainScreen.classList.add('hidden');
+        this.$.setupScreen.classList.remove('hidden');
+        this.$.setupScreen.classList.remove('fade-out');
+        this.$.setupScreen.classList.add('fade-in');
     },
 
     showMain() {
-        this.$.setupScreen.classList.add('hidden');
+        // Fade out setup screen
+        this.$.setupScreen.classList.add('fade-out');
+        setTimeout(() => {
+            this.$.setupScreen.classList.add('hidden');
+            this.$.setupScreen.classList.remove('fade-out');
+        }, 400);
+
+        // Fade in main screen
         this.$.mainScreen.classList.remove('hidden');
+        this.$.mainScreen.classList.add('fade-in');
 
         this.$.myAvatar.textContent = this.me.name[0].toUpperCase();
         this.$.myName.textContent = this.me.name;
@@ -306,7 +322,7 @@ const App = {
         this.pendingInviteId = null; // Clear it
 
         if (inviteId === this.me.id) {
-            alert("You can't connect to your own invite link.");
+            this.showToast("You can't connect to your own invite link.", 'error');
             return;
         }
 
@@ -342,32 +358,7 @@ const App = {
         const link = `${window.location.origin}${window.location.pathname}?peer=${this.me.id}`;
 
         navigator.clipboard.writeText(link).then(() => {
-            const btn = this.$.btnShareLink;
-            const originalColor = btn.style.color;
-            btn.style.color = 'var(--online)';
-
-            // Brief popup or visual feedback
-            const tooltip = document.createElement('div');
-            tooltip.textContent = 'Invite Link Copied!';
-            tooltip.style.position = 'fixed';
-            tooltip.style.bottom = '20px';
-            tooltip.style.left = '50%';
-            tooltip.style.transform = 'translateX(-50%)';
-            tooltip.style.background = 'var(--online)';
-            tooltip.style.color = '#fff';
-            tooltip.style.padding = '8px 16px';
-            tooltip.style.borderRadius = '20px';
-            tooltip.style.zIndex = '10000';
-            tooltip.style.fontSize = '14px';
-            tooltip.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
-            document.body.appendChild(tooltip);
-
-            setTimeout(() => {
-                btn.style.color = originalColor;
-                tooltip.style.opacity = '0';
-                tooltip.style.transition = 'opacity 0.3s';
-                setTimeout(() => tooltip.remove(), 300);
-            }, 2000);
+            this.showToast('Invite link copied!', 'success');
         });
     },
 
@@ -411,22 +402,32 @@ const App = {
         }
 
         // 4. Reload page
-        alert('Cache cleared! The application will now reload.');
+        this.showToast('Cache cleared! Reloading...', 'info');
         window.location.reload(true);
     },
 
     // --- Modals ---
+    _lastModalTrigger: null,
+
     showModal(type) {
+        this._lastModalTrigger = document.activeElement;
         if (type === 'add') {
             this.$.contactId.value = '';
             this.$.contactName.value = '';
-            this.$.modalAdd.classList.remove('hidden');
-            this.$.contactId.focus();
+            this.$.modalAdd.classList.remove('modal-hidden');
+            // Focus trap: focus the first input after transition
+            setTimeout(() => this.$.contactId.focus(), 100);
         }
     },
 
     hideModal(type) {
-        document.getElementById(`modal-${type}`)?.classList.add('hidden');
+        const modal = document.getElementById(`modal-${type}`);
+        if (modal) modal.classList.add('modal-hidden');
+        // Restore focus to triggering element
+        if (this._lastModalTrigger) {
+            this._lastModalTrigger.focus();
+            this._lastModalTrigger = null;
+        }
     },
 
     // --- Contacts ---
@@ -434,9 +435,9 @@ const App = {
         const id = this.$.contactId.value.trim();
         const name = this.$.contactName.value.trim();
 
-        if (!id || !name) return alert('Fill both fields');
-        if (id === this.me.id) return alert("Can't add yourself");
-        if (this.contacts[id]) return alert('Contact exists');
+        if (!id || !name) return this.showToast('Fill both fields', 'error');
+        if (id === this.me.id) return this.showToast("Can't add yourself", 'error');
+        if (this.contacts[id]) return this.showToast('Contact already exists', 'error');
 
         Storage.addContact(id, name);
         this.contacts[id] = { name, publicKey: null, online: false };
@@ -448,20 +449,36 @@ const App = {
 
     renderContacts() {
         const list = this.$.contactsList;
-        list.innerHTML = '';
-
         const entries = Object.entries(this.contacts);
+
         if (entries.length === 0) {
-            list.innerHTML = '<div class="empty-contacts">No contacts yet.<br>Click + to add someone.</div>';
+            list.innerHTML = '<div class="empty-contacts" role="listitem">No contacts yet.<br>Click + to add someone.</div>';
             return;
         }
+
+        // Smart diff: update existing items instead of full wipe
+        const existingItems = list.querySelectorAll('.contact-item');
+        const existingIds = new Set();
+        existingItems.forEach(el => existingIds.add(el.dataset.contactId));
+
+        const newIds = new Set(entries.map(([id]) => id));
+
+        // Remove items no longer in contacts
+        existingItems.forEach(el => {
+            if (!newIds.has(el.dataset.contactId)) {
+                el.style.opacity = '0';
+                el.style.transform = 'translateX(-20px)';
+                setTimeout(() => el.remove(), 200);
+            }
+        });
+
+        // Remove empty-contacts placeholder if it exists
+        const emptyPlaceholder = list.querySelector('.empty-contacts');
+        if (emptyPlaceholder) emptyPlaceholder.remove();
 
         for (const [id, c] of entries) {
             const msgs = Storage.getMessages(id);
             const lastMsg = msgs[msgs.length - 1];
-
-            const div = document.createElement('div');
-            div.className = 'contact-item' + (this.activeContact === id ? ' active' : '');
 
             let statusText = 'No messages yet';
             if (c.typing) {
@@ -470,18 +487,51 @@ const App = {
                 statusText = this.escapeHtml(lastMsg.text || lastMsg.filename || 'File').slice(0, 30);
             }
 
-            div.innerHTML = `
-                <div class="avatar">
-                    ${c.name[0].toUpperCase()}
-                    ${c.online ? '<span class="online-dot"></span>' : ''}
-                </div>
-                <div class="contact-info">
-                    <span class="name">${this.escapeHtml(c.name)}</span>
-                    <span class="last-msg ${c.typing ? 'typing' : ''}">${statusText}</span>
-                </div>
-            `;
-            div.onclick = () => this.openChat(id);
-            list.appendChild(div);
+            // Try to update existing item
+            let div = list.querySelector(`.contact-item[data-contact-id="${id}"]`);
+            if (div) {
+                // Update in-place
+                div.className = 'contact-item' + (this.activeContact === id ? ' active' : '');
+                const nameEl = div.querySelector('.name');
+                const lastMsgEl = div.querySelector('.last-msg');
+                const avatarEl = div.querySelector('.avatar');
+                if (nameEl) nameEl.textContent = c.name;
+                if (lastMsgEl) {
+                    lastMsgEl.textContent = statusText;
+                    lastMsgEl.className = 'last-msg' + (c.typing ? ' typing' : '');
+                }
+                if (avatarEl) {
+                    const hasDot = avatarEl.querySelector('.online-dot');
+                    if (c.online && !hasDot) {
+                        const dot = document.createElement('span');
+                        dot.className = 'online-dot';
+                        avatarEl.appendChild(dot);
+                    } else if (!c.online && hasDot) {
+                        hasDot.remove();
+                    }
+                }
+            } else {
+                // Create new item
+                div = document.createElement('div');
+                div.className = 'contact-item' + (this.activeContact === id ? ' active' : '');
+                div.dataset.contactId = id;
+                div.setAttribute('role', 'listitem');
+                div.setAttribute('tabindex', '0');
+                div.setAttribute('aria-label', `Chat with ${this.escapeHtml(c.name)}${c.online ? ', online' : ', offline'}`);
+                div.innerHTML = `
+                    <div class="avatar">
+                        ${c.name[0].toUpperCase()}
+                        ${c.online ? '<span class="online-dot"></span>' : ''}
+                    </div>
+                    <div class="contact-info">
+                        <span class="name">${this.escapeHtml(c.name)}</span>
+                        <span class="last-msg ${c.typing ? 'typing' : ''}">${statusText}</span>
+                    </div>
+                `;
+                div.onclick = () => this.openChat(id);
+                div.onkeydown = (e) => { if (e.key === 'Enter') this.openChat(id); };
+                list.appendChild(div);
+            }
         }
     },
 
@@ -513,7 +563,7 @@ const App = {
 
         const contact = this.contacts[this.activeContact];
         if (!contact?.publicKey) {
-            alert('Cannot verify: no public key exchanged yet. Send a message first.');
+            this.showToast('Cannot verify: no public key exchanged yet. Send a message first.', 'error');
             return;
         }
 
@@ -536,7 +586,7 @@ const App = {
             document.body.appendChild(overlay);
         } catch (err) {
             console.error('[Verify] Failed:', err);
-            alert('Could not generate safety number.');
+            this.showToast('Could not generate safety number.', 'error');
         }
     },
     openChat(contactId) {
@@ -589,14 +639,30 @@ const App = {
                 }
             }
 
-            this.renderMessage(msg, i);
+            this.renderMessage(msg, i, true);
         }
+        // Scroll to bottom after batch render
+        requestAnimationFrame(() => {
+            this.$.messages.scrollTop = this.$.messages.scrollHeight;
+        });
     },
 
-    renderMessage(msg, index) {
+    renderMessage(msg, index, isBatch = false) {
         const div = document.createElement('div');
         div.className = `message ${msg.sent ? 'sent' : 'received'}${msg.pending ? ' pending' : ''}`;
         div.dataset.index = index !== undefined ? index : '';
+
+        // Stagger animation for batch renders (only last 6 visible)
+        if (isBatch) {
+            const msgs = Storage.getMessages(this.activeContact) || [];
+            const totalMsgs = msgs.length;
+            const distFromEnd = totalMsgs - (index || 0) - 1;
+            if (distFromEnd < 6) {
+                div.classList.add(`stagger-${distFromEnd}`);
+            } else {
+                div.classList.add('no-animate');
+            }
+        }
 
         let content = '';
         if (msg.type === 'file') {
@@ -612,8 +678,8 @@ const App = {
             <div class="meta">
                 <span class="time">${new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
             </div>
-            <button class="delete-btn" title="Delete" onclick="App.deleteMessage(${index})">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+            <button class="delete-btn" title="Delete" aria-label="Delete message" onclick="App.deleteMessage(${index})">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
                     <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
                 </svg>
             </button>
@@ -623,7 +689,15 @@ const App = {
         this.setupMessageContextMenu(div, index, msg);
 
         this.$.messages.appendChild(div);
-        this.$.messages.scrollTop = this.$.messages.scrollHeight;
+        // Smooth scroll for individual messages, instant for batch
+        if (!isBatch) {
+            requestAnimationFrame(() => {
+                this.$.messages.scrollTo({
+                    top: this.$.messages.scrollHeight,
+                    behavior: 'smooth'
+                });
+            });
+        }
     },
 
     renderFileMessage(msg) {
@@ -684,31 +758,7 @@ const App = {
 
     // --- P2P Connection (PeerJS) ---
     async initPeerJS() {
-        if (!serverUrl) {
-            console.error('[P2P] No server URL configured');
-            return;
-        }
-
-        let parsed;
-        try {
-            parsed = new URL(serverUrl);
-        } catch (e) {
-            console.error('[P2P] Invalid server URL', serverUrl);
-            return;
-        }
-
-        const secure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
-        const host = parsed.hostname;
-        const port = parsed.port ? parseInt(parsed.port, 10) : (secure ? 443 : 80);
-
-        console.log(`[P2P] Connecting to PeerServer at ${host}:${port} (secure: ${secure})`);
-
-        // Initialize PeerJS with our fixed session ID
-        this.peer = new Peer(this.me.id, {
-            host: host,
-            port: port,
-            path: '/peerjs/p2p',
-            secure: secure,
+        let peerConfig = {
             debug: 2,
             config: {
                 iceServers: [
@@ -731,7 +781,32 @@ const App = {
                     }
                 ]
             }
-        });
+        };
+
+        if (serverUrl) {
+            let parsed;
+            try {
+                parsed = new URL(serverUrl);
+            } catch (e) {
+                console.error('[P2P] Invalid server URL', serverUrl);
+                return;
+            }
+
+            const secure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
+            const host = parsed.hostname;
+            const port = parsed.port ? parseInt(parsed.port, 10) : (secure ? 443 : 80);
+
+            console.log(`[P2P] Connecting to custom PeerServer at ${host}:${port} (secure: ${secure})`);
+            peerConfig.host = host;
+            peerConfig.port = port;
+            peerConfig.path = '/peerjs/p2p';
+            peerConfig.secure = secure;
+        } else {
+            console.log(`[P2P] Connecting to default public PeerJS Cloud`);
+        }
+
+        // Initialize PeerJS with our fixed session ID
+        this.peer = new Peer(this.me.id, peerConfig);
 
         this.peer.on('open', (id) => {
             console.log('[P2P] Connected to server with ID:', id);
@@ -745,7 +820,7 @@ const App = {
                 // ID collision - generate a new one and retry
                 this._idRetries = (this._idRetries || 0) + 1;
                 if (this._idRetries > 3) {
-                    alert('Could not find a unique ID after 3 attempts. Please try again.');
+                    this.showToast('Could not find a unique ID after 3 attempts.', 'error');
                     return;
                 }
                 console.warn(`[P2P] ID collision, regenerating (attempt ${this._idRetries})...`);
@@ -1113,7 +1188,7 @@ const App = {
     async startCall() {
         const contactId = this.activeContact;
         if (!contactId || !this.contacts[contactId]?.online) {
-            return alert('Contact is offline');
+            return this.showToast('Contact is offline', 'error');
         }
 
         try {
@@ -1156,7 +1231,7 @@ const App = {
 
         } catch (err) {
             console.error('Failed to get mic:', err);
-            alert('Could not access microphone');
+            this.showToast('Could not access microphone', 'error');
             this.endCall(true); // cleanup
         }
     },
@@ -1170,7 +1245,7 @@ const App = {
         this.$.callName.textContent = c?.name || 'Unknown';
         this.$.callStatus.textContent = 'Incoming call...';
         this.$.callTimer.textContent = '';
-        this.$.modalCall.classList.remove('hidden');
+        this.$.modalCall.classList.remove('modal-hidden');
 
         // Show accept/decline for incoming
         this.$.btnAcceptCall.classList.remove('hidden');
@@ -1185,7 +1260,7 @@ const App = {
     },
 
     showCallUI(isInitiator) {
-        this.$.modalCall.classList.remove('hidden');
+        this.$.modalCall.classList.remove('modal-hidden');
         this.$.btnAcceptCall.classList.toggle('hidden', isInitiator);
         this.$.btnDeclineCall.classList.toggle('hidden', isInitiator);
         this.$.btnMute.classList.toggle('hidden', !isInitiator);
@@ -1231,7 +1306,7 @@ const App = {
             this.pendingContactId = null;
         } catch (err) {
             console.error('Accept call error:', err);
-            alert('Could not access microphone');
+            this.showToast('Could not access microphone', 'error');
             this.endCall(true); // cleanup
         }
     },
@@ -1242,7 +1317,7 @@ const App = {
         }
         this.pendingCall = null;
         this.pendingContactId = null;
-        this.$.modalCall.classList.add('hidden');
+        this.$.modalCall.classList.add('modal-hidden');
     },
 
     toggleMute() {
@@ -1304,7 +1379,7 @@ const App = {
         this.pendingCall = null; // Clear pending PeerJS call
 
         this.$.remoteAudio.srcObject = null;
-        this.$.modalCall.classList.add('hidden');
+        this.$.modalCall.classList.add('modal-hidden');
     },
 
     // --- Typing Indicators ---
@@ -1408,13 +1483,13 @@ const App = {
     async sendFile(file, isVoice = false) {
         const conn = this.connections.get(this.activeContact);
         if (!conn || !conn.open) {
-            alert('Not connected to peer');
+            this.showToast('Not connected to peer', 'error');
             return;
         }
 
         const contact = this.contacts[this.activeContact];
         if (!contact?.online) {
-            alert('Contact is offline');
+            this.showToast('Contact is offline', 'error');
             return;
         }
 
@@ -1697,7 +1772,7 @@ const App = {
 
         } catch (err) {
             console.error('Voice recording error:', err);
-            alert('Could not access microphone');
+            this.showToast('Could not access microphone', 'error');
         }
     },
 
@@ -1727,9 +1802,18 @@ const App = {
         // Close on scroll
         this.$.messages?.addEventListener('scroll', () => this.hideContextMenu());
 
-        // Close on ESC
+        // Close on ESC (context menu + modals)
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') this.hideContextMenu();
+            if (e.key === 'Escape') {
+                this.hideContextMenu();
+                // Close any open modals
+                if (!this.$.modalAdd.classList.contains('modal-hidden')) {
+                    this.hideModal('add');
+                }
+                if (!this.$.modalCall.classList.contains('modal-hidden')) {
+                    this.endCall();
+                }
+            }
         });
 
         // Handle menu item clicks
@@ -1831,6 +1915,33 @@ const App = {
         }
 
         this.hideContextMenu();
+    },
+
+    // --- Toast Notifications ---
+    showToast(message, type = 'info') {
+        const container = this.$.toastContainer;
+        if (!container) return;
+
+        const icons = {
+            success: '✓',
+            error: '✗',
+            info: 'ℹ'
+        };
+
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.innerHTML = `
+            <span class="toast-icon">${icons[type] || icons.info}</span>
+            <span>${this.escapeHtml(message)}</span>
+        `;
+
+        container.appendChild(toast);
+
+        // Auto-dismiss after 3s
+        setTimeout(() => {
+            toast.classList.add('toast-out');
+            toast.addEventListener('animationend', () => toast.remove());
+        }, 3000);
     }
 };
 
