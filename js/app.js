@@ -767,10 +767,21 @@ const App = {
             debug: 2,
             config: {
                 iceServers: [
+                    // STUN servers (discover public IP)
                     { urls: 'stun:stun.l.google.com:19302' },
                     { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' },
+                    { urls: 'stun:stun3.l.google.com:19302' },
+                    { urls: 'stun:stun4.l.google.com:19302' },
+                    { urls: 'stun:stun.cloudflare.com:3478' },
+                    // TURN servers (relay for symmetric NAT / carrier-grade NAT)
                     {
                         urls: "turn:openrelay.metered.ca:80",
+                        username: "openrelayproject",
+                        credential: "openrelayproject"
+                    },
+                    {
+                        urls: "turn:openrelay.metered.ca:80?transport=tcp",
                         username: "openrelayproject",
                         credential: "openrelayproject"
                     },
@@ -780,7 +791,7 @@ const App = {
                         credential: "openrelayproject"
                     },
                     {
-                        urls: "turn:openrelay.metered.ca:443?transport=tcp",
+                        urls: "turns:openrelay.metered.ca:443?transport=tcp",
                         username: "openrelayproject",
                         credential: "openrelayproject"
                     }
@@ -897,11 +908,14 @@ const App = {
     },
 
     setupConnection(conn) {
-        // Setup event listeners for connection
+        const retryDelays = [5000, 15000, 30000]; // Retry after 5s, 15s, 30s
+
         conn.on('open', () => {
             console.log(`[P2P] Connection established with ${conn.peer}`);
             this.connections.set(conn.peer, conn);
             this.handlePeerConnect(conn.peer);
+            // Reset retry counter on successful connection
+            delete this._retryCount;
 
             // Send our identity to verify
             conn.send({
@@ -918,13 +932,40 @@ const App = {
             console.log(`[P2P] Connection closed with ${conn.peer}`);
             this.connections.delete(conn.peer);
             this.handlePeerDisconnect(conn.peer);
+            // Auto-retry if peer is still in contacts
+            this._scheduleReconnect(conn.peer, retryDelays);
         });
 
         conn.on('error', (err) => {
             console.error(`[P2P] Connection error with ${conn.peer}:`, err);
             this.connections.delete(conn.peer);
             this.handlePeerDisconnect(conn.peer);
+            // Auto-retry on error
+            this._scheduleReconnect(conn.peer, retryDelays);
         });
+    },
+
+    _scheduleReconnect(peerId, delays) {
+        if (!this.contacts[peerId]) return; // Contact was deleted
+
+        if (!this._retryCount) this._retryCount = {};
+        const attempt = this._retryCount[peerId] || 0;
+
+        if (attempt >= delays.length) {
+            console.log(`[P2P] Max retries reached for ${peerId}`);
+            return;
+        }
+
+        const delay = delays[attempt];
+        this._retryCount[peerId] = attempt + 1;
+        console.log(`[P2P] Scheduling reconnect to ${peerId} in ${delay / 1000}s (attempt ${attempt + 1}/${delays.length})`);
+
+        setTimeout(() => {
+            if (this.contacts[peerId] && !this.connections.has(peerId) && this.peer && !this.peer.destroyed) {
+                console.log(`[P2P] Retrying connection to ${peerId}...`);
+                this.connectToPeer(peerId);
+            }
+        }, delay);
     },
 
     handleDataMessage(peerId, data) {
