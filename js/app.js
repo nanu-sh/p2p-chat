@@ -143,6 +143,8 @@ const App = {
             serverUrlInput: document.getElementById('server-url'),
             // Toast
             toastContainer: document.getElementById('toast-container'),
+            // Global Clear Cache
+            btnClearCacheMain: document.getElementById('btn-clear-cache-main'),
         };
     },
 
@@ -151,6 +153,9 @@ const App = {
         this.$.btnSetup.onclick = () => this.setup();
         if (this.$.btnClearCache) {
             this.$.btnClearCache.onclick = () => this.clearCache();
+        }
+        if (this.$.btnClearCacheMain) {
+            this.$.btnClearCacheMain.onclick = () => this.clearCache();
         }
         this.$.setupName.onkeydown = (e) => {
             if (e.key === 'Enter') this.setup();
