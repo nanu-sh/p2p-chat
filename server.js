@@ -20,6 +20,27 @@ const PORT = 3000;
 const app = express();
 app.use(cors());
 
+// Rate limiting - prevent brute-force ID guessing and connection spam
+const rateLimit = require('express-rate-limit');
+
+const generalLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: 'Too many requests, try again later.'
+});
+
+const signalingLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: 'Too many signaling requests.'
+});
+
+app.use(generalLimiter);
+
 // Serve static files (the app)
 app.use(express.static(path.join(__dirname, '/')));
 
@@ -32,8 +53,8 @@ const peerServer = ExpressPeerServer(server, {
     path: '/p2p' // Signaling endpoint will be /peerjs/p2p
 });
 
-// Mount the PeerJS server
-app.use('/peerjs', peerServer);
+// Mount the PeerJS server with stricter rate limiting
+app.use('/peerjs', signalingLimiter, peerServer);
 
 // Listen for peer connections
 peerServer.on('connection', (client) => {

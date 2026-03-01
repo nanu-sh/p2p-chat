@@ -6,6 +6,7 @@ const urlsToCache = [
     './css/style.css',
     './js/app.js',
     './js/crypto.js',
+    './js/peerjs.min.js',
     './icons/icon-192.svg',
     './icons/icon-512.svg'
 ];

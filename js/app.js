@@ -44,6 +44,10 @@ const App = {
     longPressTimer: null,
     longPressTriggered: false,
 
+    // Replay protection
+    seenNonces: new Map(), // contactId -> Set of nonces
+    MAX_NONCE_AGE: 5 * 60 * 1000, // 5 minutes - reject messages older than this
+
     // DOM cache
     $: {},
 
@@ -106,6 +110,7 @@ const App = {
             chatName: document.getElementById('chat-name'),
             chatStatus: document.getElementById('chat-status'),
             btnCall: document.getElementById('btn-call'),
+            btnVerify: document.getElementById('btn-verify'),
             btnDisconnect: document.getElementById('btn-disconnect'),
             btnDelete: document.getElementById('btn-delete'),
             messages: document.getElementById('messages'),
@@ -191,6 +196,11 @@ const App = {
 
         // Delete
         this.$.btnDelete.onclick = () => this.deleteContact();
+
+        // Verify identity
+        if (this.$.btnVerify) {
+            this.$.btnVerify.onclick = () => this.showSafetyNumber();
+        }
 
         // File attachment
         this.$.btnAttach.onclick = () => this.$.fileInput.click();
@@ -497,7 +507,38 @@ const App = {
         this.renderContacts();
     },
 
-    // --- Chat ---
+    // --- Safety Number Verification ---
+    async showSafetyNumber() {
+        if (!this.activeContact) return;
+
+        const contact = this.contacts[this.activeContact];
+        if (!contact?.publicKey) {
+            alert('Cannot verify: no public key exchanged yet. Send a message first.');
+            return;
+        }
+
+        try {
+            const theirPub = await Crypto.importPublicKey(contact.publicKey);
+            const safetyNumber = await Crypto.generateSafetyNumber(this.me.publicKey, theirPub);
+
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:9999;backdrop-filter:blur(4px);';
+            overlay.innerHTML = `
+                <div style="background:#1e293b;border:1px solid rgba(99,102,241,0.3);border-radius:16px;padding:32px;max-width:340px;text-align:center;color:#fff;font-family:system-ui;">
+                    <div style="font-size:32px;margin-bottom:8px;">🛡️</div>
+                    <h3 style="margin:0 0 4px;">Safety Number</h3>
+                    <p style="color:#94a3b8;font-size:13px;margin:0 0 16px;">Compare this with <b>${this.escapeHtml(contact.name)}</b> in person or over a trusted channel. If they match, the connection is secure.</p>
+                    <div style="font-family:'Courier New',monospace;font-size:18px;letter-spacing:2px;line-height:2;color:#a5b4fc;background:#0f172a;border-radius:8px;padding:16px;word-break:break-all;">${safetyNumber}</div>
+                    <button style="margin-top:20px;padding:10px 32px;background:#6366f1;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:15px;" onclick="this.closest('div[style]').remove()">Done</button>
+                </div>
+            `;
+            overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+            document.body.appendChild(overlay);
+        } catch (err) {
+            console.error('[Verify] Failed:', err);
+            alert('Could not generate safety number.');
+        }
+    },
     openChat(contactId) {
         this.activeContact = contactId;
         const c = this.contacts[contactId];
@@ -936,7 +977,9 @@ const App = {
         if (isOnline) {
             const key = await this.ensureSharedKey(this.activeContact);
             if (key) {
-                const encrypted = await Crypto.encrypt(key, JSON.stringify(msg));
+                // Add nonce for replay protection
+                const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+                const encrypted = await Crypto.encrypt(key, JSON.stringify({ ...msg, nonce }));
                 conn.send({ action: 'msg', payload: { encrypted: true, ...encrypted } });
             } else {
                 conn.send({ action: 'msg', payload: { encrypted: false, ...msg } });
@@ -1021,6 +1064,29 @@ const App = {
             }
             const decrypted = await Crypto.decrypt(key, { iv: data.iv, data: data.data });
             msg = JSON.parse(decrypted);
+
+            // Replay protection: check nonce
+            if (msg.nonce) {
+                if (!this.seenNonces.has(contactId)) {
+                    this.seenNonces.set(contactId, new Set());
+                }
+                const nonces = this.seenNonces.get(contactId);
+                if (nonces.has(msg.nonce)) {
+                    console.warn('[Security] Replay detected, dropping message');
+                    return;
+                }
+                nonces.add(msg.nonce);
+
+                // Prune old nonces to prevent memory leak
+                if (nonces.size > 500) {
+                    const arr = Array.from(nonces);
+                    arr.splice(0, arr.length - 200);
+                    this.seenNonces.set(contactId, new Set(arr));
+                }
+
+                // Remove nonce before storing (not needed in history)
+                delete msg.nonce;
+            }
         } else {
             msg = { text: data.text, time: data.time };
         }

@@ -48,6 +48,48 @@ const Crypto = {
         return result;
     },
 
+    // Generate a Safety Number from two public keys for identity verification
+    // Both peers compute the same number regardless of order
+    async generateSafetyNumber(myPublicKey, theirPublicKey) {
+        const myRaw = await crypto.subtle.exportKey('raw', myPublicKey);
+        const theirRaw = await crypto.subtle.exportKey('raw', theirPublicKey);
+
+        // Sort keys so both peers get the same result
+        const myBytes = new Uint8Array(myRaw);
+        const theirBytes = new Uint8Array(theirRaw);
+        const [first, second] = this._compareArrays(myBytes, theirBytes) <= 0
+            ? [myBytes, theirBytes] : [theirBytes, myBytes];
+
+        // Concatenate and hash
+        const combined = new Uint8Array(first.length + second.length);
+        combined.set(first);
+        combined.set(second, first.length);
+
+        const hash = await crypto.subtle.digest('SHA-256', combined);
+        const bytes = new Uint8Array(hash);
+
+        // Format as 12 groups of 5 digits (60 digits total, like Signal)
+        let digits = '';
+        for (let i = 0; i < 30; i++) {
+            const val = (bytes[i % bytes.length] << 8 | bytes[(i + 1) % bytes.length]) % 100000;
+            digits += val.toString().padStart(5, '0');
+            if (digits.length >= 60) break;
+        }
+        digits = digits.slice(0, 60);
+
+        // Split into 12 groups of 5
+        return digits.match(/.{5}/g).join(' ');
+    },
+
+    _compareArrays(a, b) {
+        const len = Math.min(a.length, b.length);
+        for (let i = 0; i < len; i++) {
+            if (a[i] < b[i]) return -1;
+            if (a[i] > b[i]) return 1;
+        }
+        return a.length - b.length;
+    },
+
     // Derive shared AES key from ECDH
     async deriveSharedKey(privateKey, publicKey) {
         const sharedBits = await crypto.subtle.deriveBits(
